@@ -45,6 +45,7 @@ class ScheduleFnDatabaseNode : public DatabaseNode {
       return TuningRecord(sch.value()->trace().value(),
                           /*workload=*/Workload(mod, 0),  //
                           /*run_secs=*/std::nullopt,      //
+                          /*bw_mbps=*/std::nullopt,      //
                           /*target=*/target,              //
                           /*arg_info=*/std::nullopt);
     }

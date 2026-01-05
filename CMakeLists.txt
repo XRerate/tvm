@@ -626,6 +626,19 @@ target_include_directorieS(
   tvm_runtime_objs
   PRIVATE "${CRC16_INCLUDE_PATH}")
 
+if(BUILD_FOR_ANDROID)
+  get_filename_component(GPUBANDWIDTH_PROFILER_DIR 
+    "${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/GPUBandwidthProfiler" 
+    ABSOLUTE)
+  add_subdirectory("${GPUBANDWIDTH_PROFILER_DIR}" 
+                   "${CMAKE_BINARY_DIR}/3rdparty/GPUBandwidthProfiler")
+  target_include_directories(
+    tvm_runtime_objs
+    PRIVATE "3rdparty/GPUBandwidthProfiler/include"
+  )
+  target_link_libraries(tvm_runtime PRIVATE GPUBandwidthProfiler)
+endif()
+
 set(TVM_TEST_LIBRARY_NAME tvm)
 if (HIDE_PRIVATE_SYMBOLS AND NOT ${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
   add_library(tvm_allvisible SHARED $<TARGET_OBJECTS:tvm_objs> $<TARGET_OBJECTS:tvm_runtime_objs> $<TARGET_OBJECTS:tvm_libinfo_objs>)

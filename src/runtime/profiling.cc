@@ -925,6 +925,76 @@ ffi::Function WrapTimeEvaluator(ffi::Function pf, Device dev, int number, int re
   return ffi::Function::FromPacked(ftimer);
 }
 
+// TODO(widiba03304): Implement this function.
+ffi::Function WrapTimeBwEvaluator(ffi::Function pf, Device dev, int number, int repeat,
+                                  int min_repeat_ms, int limit_zero_time_iterations,
+                                  int cooldown_interval_ms, int repeats_to_cooldown,
+                                  int cache_flush_bytes, ffi::Function f_preproc) {
+  ICHECK(pf != nullptr);
+
+  auto ftimer = [pf, dev, number, repeat, min_repeat_ms, limit_zero_time_iterations,
+                 cooldown_interval_ms, repeats_to_cooldown, cache_flush_bytes,
+                 f_preproc](const ffi::AnyView* args, int num_args, ffi::Any* rv) mutable {
+    ffi::Any temp;
+    std::ostringstream os;
+    // skip first time call, to activate lazy compilation components.
+    pf.CallPacked(args, num_args, &temp);
+
+    // allocate two large arrays to flush L2 cache
+    Tensor arr1, arr2;
+    if (cache_flush_bytes > 0) {
+      arr1 = Tensor::Empty({cache_flush_bytes / 4}, {kDLInt, 32, 1}, dev);
+      arr2 = Tensor::Empty({cache_flush_bytes / 4}, {kDLInt, 32, 1}, dev);
+    }
+
+    DeviceAPI::Get(dev)->StreamSync(dev, nullptr);
+
+    for (int i = 0; i < repeat; ++i) {
+      if (f_preproc != nullptr) {
+        f_preproc.CallPacked(args, num_args, &temp);
+      }
+      double duration_ms = 0.0;
+      int absolute_zero_times = 0;
+      do {
+        if (duration_ms > 0.0) {
+          const double golden_ratio = 1.618;
+          number = static_cast<int>(
+              std::max((min_repeat_ms / (duration_ms / number) + 1), number * golden_ratio));
+        }
+        if (cache_flush_bytes > 0) {
+          arr1.CopyFrom(arr2);
+        }
+        DeviceAPI::Get(dev)->StreamSync(dev, nullptr);
+        // start timing
+        Timer t = Timer::Start(dev);
+        // Profiler p = Profiler::Start(dev);
+        for (int j = 0; j < number; ++j) {
+          pf.CallPacked(args, num_args, &temp);
+        }
+        t->Stop();
+        // p.stop;
+        int64_t t_nanos = t->SyncAndGetElapsedNanos();
+        if (t_nanos == 0) absolute_zero_times++;
+        duration_ms = t_nanos / 1e6;
+      } while (duration_ms < min_repeat_ms && absolute_zero_times < limit_zero_time_iterations);
+
+      double speed = duration_ms / 1e3 / number;
+      double bandwidth_mbps = 1000;
+      os.write(reinterpret_cast<char*>(&speed), sizeof(speed));
+      os.write(reinterpret_cast<char*>(&bandwidth_mbps), sizeof(bandwidth_mbps));
+
+      if (cooldown_interval_ms > 0 && (i % repeats_to_cooldown) == 0) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(cooldown_interval_ms));
+      }
+    }
+
+    std::string blob = os.str();
+    // return the time.
+    *rv = ffi::Bytes(std::move(blob));
+  };
+  return ffi::Function::FromPacked(ftimer);
+}
+
 TVM_FFI_STATIC_INIT_BLOCK() {
   namespace refl = tvm::ffi::reflection;
   refl::GlobalDef()

@@ -33,9 +33,11 @@ RunnerInput::RunnerInput(ffi::String artifact_path, ffi::String device_type,
 }
 
 RunnerResult::RunnerResult(ffi::Optional<ffi::Array<FloatImm>> run_secs,
+                           ffi::Optional<ffi::Array<FloatImm>> bw_mbps,
                            ffi::Optional<ffi::String> error_msg) {
   ObjectPtr<RunnerResultNode> n = ffi::make_object<RunnerResultNode>();
   n->run_secs = run_secs;
+  n->bw_mbps = bw_mbps;
   n->error_msg = error_msg;
   this->data_ = n;
 }
@@ -70,8 +72,11 @@ TVM_FFI_STATIC_INIT_BLOCK() {
            [](ffi::String artifact_path, ffi::String device_type, ffi::Array<ArgInfo> args_info)
                -> RunnerInput { return RunnerInput(artifact_path, device_type, args_info); })
       .def("meta_schedule.RunnerResult",
-           [](ffi::Optional<ffi::Array<FloatImm>> run_secs, ffi::Optional<ffi::String> error_msg)
-               -> RunnerResult { return RunnerResult(run_secs, error_msg); })
+           [](ffi::Optional<ffi::Array<FloatImm>> run_secs,
+              ffi::Optional<ffi::Array<FloatImm>> bw_mbps,
+              ffi::Optional<ffi::String> error_msg) -> RunnerResult {
+             return RunnerResult(run_secs, bw_mbps, error_msg);
+           })
       .def("meta_schedule.RunnerFuture",
            [](RunnerFuture::FDone f_done, RunnerFuture::FResult f_result) -> RunnerFuture {
              return RunnerFuture(f_done, f_result);

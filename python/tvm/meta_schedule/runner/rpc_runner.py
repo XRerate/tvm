@@ -18,7 +18,7 @@
 import concurrent.futures
 import os.path as osp
 from contextlib import contextmanager
-from typing import Callable, List, Optional, Union
+from typing import Callable, List, Optional, Union, Tuple
 
 from tvm.contrib.popen_pool import PopenPoolExecutor
 from tvm.rpc import RPCSession
@@ -72,7 +72,7 @@ T_RUN_EVALUATOR = Callable[  # pylint: disable=invalid-name
         EvaluatorConfig,  # The evaluator configuration
         List[T_ARGUMENT_LIST],  # A list of argument lists
     ],
-    List[float],  # A list of running time
+    Tuple[List[float], List[float]],  # A tuple of running time and bandwidth in MB/s
 ]
 T_CLEANUP = Callable[  # pylint: disable=invalid-name
     [
@@ -117,18 +117,22 @@ class RPCRunnerFuture(PyRunnerFuture):
 
     def result(self) -> RunnerResult:
         try:
-            run_secs: List[float] = self.future.result()
+            result = self.future.result()
+            run_secs: List[float] = result[0]
+            bw_mbps: List[float] = result[1]
         except TimeoutError:
             return RunnerResult(
+                None,
                 None,
                 error_msg=f"RPCRunner: Timeout, killed after {self.timeout_sec} seconds",
             )
         except Exception as exception:  # pylint: disable=broad-except
             return RunnerResult(
                 None,
+                None,
                 error_msg="RPCRunner: An exception occurred\n" + str(exception),
             )
-        return RunnerResult(run_secs, None)
+        return RunnerResult(run_secs, bw_mbps, None)
 
 
 @derived_object

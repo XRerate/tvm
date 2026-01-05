@@ -91,6 +91,8 @@ class TuningRecord(Object):
         The workload of the tuning record.
     run_secs : Optional[List[float]]
         The run time of the tuning record.
+    bw_mbps : Optional[List[float]]
+        The bandwidth in MB/s of the tuning record.
     target : Optional[Target]
         The target of the tuning record.
     args_info : Optional[List[ArgInfo]]
@@ -100,6 +102,7 @@ class TuningRecord(Object):
     trace: Trace
     workload: Workload
     run_secs: Optional[List[float]]
+    bw_mbps: Optional[List[float]]
     target: Optional[Target]
     args_info: Optional[List[ArgInfo]]
 
@@ -108,6 +111,7 @@ class TuningRecord(Object):
         trace: Trace,
         workload: Workload,
         run_secs: Optional[List[float]] = None,
+        bw_mbps: Optional[List[float]] = None,
         target: Optional[Target] = None,
         args_info: Optional[List[ArgInfo]] = None,
     ) -> None:
@@ -116,6 +120,7 @@ class TuningRecord(Object):
             trace,
             workload,
             run_secs,
+            bw_mbps,
             target,
             args_info,
         )

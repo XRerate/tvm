@@ -94,6 +94,69 @@ class BenchmarkResult:
         )
 
 
+class BenchmarkTimeBwResult:
+    """Runtimes from benchmarking"""
+
+    def __init__(self, results: Sequence[tuple[float, float]]):
+        """Construct a new BenchmarkResult from a sequence of runtimes.
+
+        Parameters
+        ----------
+        results : Tuple[Sequence[float], Sequence[float]]
+            Raw times and bandwidths from benchmarking
+
+        Attributes
+        ----------
+        min : float
+            Minimum runtime in seconds of all results.
+        mean : float
+            Mean runtime in seconds of all results. If py:meth:`Module.time_evaluator` or
+            `benchmark` is called with `number` > 0, then each result is already the mean of a
+            `number` of runtimes, so this becomes the mean of means.
+        median : float
+            Median runtime in seconds of all results. If py:meth:`Module.time_evaluator` is called
+            with `number` > 0, then each result is already the mean of a `number` of runtimes, so
+            this becomes the median of means.
+        max : float
+            Maximum runtime in seconds of all results. If py:meth:`Module.time_evaluator` is called
+            with `number` > 0, then each result is already the mean of a `number` of runtimes, so
+            this becomes the maximum of those means.
+        std : float
+            Standard deviation in seconds of runtimes. If py:meth:`Module.time_evaluator` is called
+            with `number` > 0, then each result is already the mean of a `number` of runtimes, so
+            this becomes the standard deviation of means.
+        results : Sequence[float]
+            The collected runtimes (in seconds). This may be a series of mean runtimes if
+            py:meth:`Module.time_evaluator` or `benchmark` was run with `number` > 1.
+        """
+        self.results = results
+        self.mean = (np.mean([cost_latency for cost_latency, cost_bw in self.results]), np.mean([cost_bw for cost_latency, cost_bw in self.results]))
+        self.std = (np.std([cost_latency for cost_latency, cost_bw in self.results]), np.std([cost_bw for cost_latency, cost_bw in self.results]))
+        self.median = (np.median([cost_latency for cost_latency, cost_bw in self.results]), np.median([cost_bw for cost_latency, cost_bw in self.results]))
+        self.min = (np.min([cost_latency for cost_latency, cost_bw in self.results]), np.min([cost_bw for cost_latency, cost_bw in self.results]))
+        self.max = (np.max([cost_latency for cost_latency, cost_bw in self.results]), np.max([cost_bw for cost_latency, cost_bw in self.results]))
+
+    def __repr__(self):
+        return (
+            f"BenchmarkTimeBwResult(min={self.min}, mean={self.mean}, median={self.median}, "
+            f"max={self.max}, std={self.std}, results={self.results})"
+        )
+
+    def __str__(self):
+        return (
+            f"Execution time and bandwidth summary:\n"
+            f"{'mean (ms)':^12} {'median (ms)':^12} {'max (ms)':^12} "
+            f"{'min (ms)':^12} {'std (ms)':^12}\n"
+            f"{self.mean[0] * 1000:^12.4f} {self.median[0] * 1000:^12.4f} {self.max[0] * 1000:^12.4f} "
+            f"{self.min[0] * 1000:^12.4f} {self.std[0] * 1000:^12.4f}\n"
+            f"{'mean (MB/s)':^12} {'median (MB/s)':^12} {'max (MB/s)':^12} "
+            f"{'min (MB/s)':^12} {'std (MB/s)':^12}\n"
+            f"{self.mean[1] * 1000:^12.4f} {self.median[1] * 1000:^12.4f} {self.max[1] * 1000:^12.4f} "
+            f"{self.min[1] * 1000:^12.4f} {self.std[1] * 1000:^12.4f}"
+            "               "
+        )
+
+
 # override the Module class in ffi.Module
 @_register_object("ffi.Module")
 class Module(_Module):
@@ -396,6 +459,50 @@ class Module(_Module):
                 fmt = "@" + ("d" * repeat)
                 results = struct.unpack(fmt, blob)
                 return BenchmarkResult(results)
+
+            return evaluator
+        except NameError:
+            raise NameError("time_evaluator is only supported when RPC is enabled")
+
+    def time_bw_evaluator(
+        self,
+        func_name,
+        dev,
+        number=10,
+        repeat=1,
+        min_repeat_ms=0,
+        limit_zero_time_iterations=100,
+        cooldown_interval_ms=0,
+        repeats_to_cooldown=1,
+        cache_flush_bytes=0,
+        f_preproc="",
+    ):
+        try:
+            feval = _ffi_api.RPCTimeBwEvaluator(
+                self,
+                func_name,
+                dev.dlpack_device_type(),
+                dev.index,
+                number,
+                repeat,
+                min_repeat_ms,
+                limit_zero_time_iterations,
+                cooldown_interval_ms,
+                repeats_to_cooldown,
+                cache_flush_bytes,
+                f_preproc,
+            )
+
+            def evaluator(*args):
+                """Internal wrapped evaluator."""
+                # Wrap feval so we can add more stats in future.
+                blob = feval(*args)
+                fmt = "@" + ("d" * repeat * 2)
+                results = struct.unpack(fmt, blob)
+                run_ms = results[0::2]
+                bandwidth_mbps = results[1::2]
+
+                return BenchmarkTimeBwResult(list(zip(run_ms, bandwidth_mbps)))
 
             return evaluator
         except NameError:

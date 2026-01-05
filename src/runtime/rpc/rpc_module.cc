@@ -226,6 +226,28 @@ class RPCModuleNode final : public ffi::ModuleObj {
     }
   }
 
+  ffi::Function GetTimeBwEvaluator(const std::string& name, Device dev, int number, int repeat,
+                                   int min_repeat_ms, int limit_zero_time_iterations,
+                                   int cooldown_interval_ms, int repeats_to_cooldown,
+                                   int cache_flush_bytes, const std::string& f_preproc_name) {
+    InitRemoteFunc(&remote_get_time_bw_evaluator_, "runtime.RPCTimeBwEvaluator");
+    // Remove session mask because we pass dev by parts.
+    ICHECK_EQ(GetRPCSessionIndex(dev), sess_->table_index())
+        << "ValueError: Need to pass the matched remote device to RPCModule.GetTimeBwEvaluator";
+    dev = RemoveRPCSessionMask(dev);
+
+    if (module_handle_ != nullptr) {
+      return remote_get_time_bw_evaluator_(
+          ffi::GetRef<ffi::Module>(this), name, static_cast<int>(dev.device_type), dev.device_id,
+          number, repeat, min_repeat_ms, limit_zero_time_iterations, cooldown_interval_ms,
+          repeats_to_cooldown, cache_flush_bytes, f_preproc_name);
+    }
+    return remote_get_time_bw_evaluator_(
+        ffi::Optional<ffi::Module>(std::nullopt), name, static_cast<int>(dev.device_type),
+        dev.device_id, number, repeat, min_repeat_ms, limit_zero_time_iterations,
+        cooldown_interval_ms, repeats_to_cooldown, cache_flush_bytes, f_preproc_name);
+  }
+
   ffi::Module LoadModule(std::string name) {
     InitRemoteFunc(&remote_load_module_, "tvm.rpc.server.load_module");
     return remote_load_module_(name);
@@ -264,6 +286,10 @@ class RPCModuleNode final : public ffi::ModuleObj {
   ffi::TypedFunction<ffi::Function(ffi::Optional<ffi::Module>, std::string, int, int, int, int, int,
                                    int, int, int, int, std::string)>
       remote_get_time_evaluator_;
+  // remote function to get time bw evaluator
+  ffi::TypedFunction<ffi::Function(ffi::Optional<ffi::Module>, std::string, int, int, int, int, int,
+                                   int, int, int, int, std::string)>
+      remote_get_time_bw_evaluator_;
   // remote function getter for modules.
   ffi::TypedFunction<ffi::Function(ffi::Module, std::string, bool)> remote_mod_get_function_;
   // remote function getter for load module
@@ -437,6 +463,51 @@ TVM_FFI_STATIC_INIT_BLOCK() {
                  f_preproc = *pf_preproc;
                }
                return profiling::WrapTimeEvaluator(
+                   *pf, dev, number, repeat, min_repeat_ms, limit_zero_time_iterations,
+                   cooldown_interval_ms, repeats_to_cooldown, cache_flush_bytes, f_preproc);
+             }
+           })
+      .def("runtime.RPCTimeBwEvaluator",
+           [](ffi::Optional<ffi::Module> opt_mod, std::string name, int device_type, int device_id,
+              int number, int repeat, int min_repeat_ms, int limit_zero_time_iterations,
+              int cooldown_interval_ms, int repeats_to_cooldown, int cache_flush_bytes,
+              std::string f_preproc_name) {
+             Device dev;
+             dev.device_type = static_cast<DLDeviceType>(device_type);
+             dev.device_id = device_id;
+             if (opt_mod.defined()) {
+               ffi::Module m = opt_mod.value();
+               std::string tkey = m->kind();
+               if (tkey == "rpc") {
+                 return static_cast<RPCModuleNode*>(m.operator->())
+                     ->GetTimeBwEvaluator(name, dev, number, repeat, min_repeat_ms,
+                                          limit_zero_time_iterations, cooldown_interval_ms,
+                                          repeats_to_cooldown, cache_flush_bytes, f_preproc_name);
+               } else {
+                 ffi::Function f_preproc;
+                 if (!f_preproc_name.empty()) {
+                   auto pf_preproc = tvm::ffi::Function::GetGlobal(f_preproc_name);
+                   ICHECK(pf_preproc.has_value())
+                       << "Cannot find " << f_preproc_name << " in the global function";
+                   f_preproc = *pf_preproc;
+                 }
+                 ffi::Optional<ffi::Function> pf = m->GetFunction(name);
+                 CHECK(pf.has_value()) << "Cannot find " << name << "` in the global registry";
+                 return profiling::WrapTimeBwEvaluator(
+                     *pf, dev, number, repeat, min_repeat_ms, limit_zero_time_iterations,
+                     cooldown_interval_ms, repeats_to_cooldown, cache_flush_bytes, f_preproc);
+               }
+             } else {
+               auto pf = tvm::ffi::Function::GetGlobal(name);
+               ICHECK(pf.has_value()) << "Cannot find " << name << " in the global function";
+               ffi::Function f_preproc;
+               if (!f_preproc_name.empty()) {
+                 auto pf_preproc = tvm::ffi::Function::GetGlobal(f_preproc_name);
+                 ICHECK(pf_preproc.has_value())
+                     << "Cannot find " << f_preproc_name << " in the global function";
+                 f_preproc = *pf_preproc;
+               }
+               return profiling::WrapTimeBwEvaluator(
                    *pf, dev, number, repeat, min_repeat_ms, limit_zero_time_iterations,
                    cooldown_interval_ms, repeats_to_cooldown, cache_flush_bytes, f_preproc);
              }

@@ -99,7 +99,7 @@ def run_evaluator_common(
 
     Returns
     -------
-    costs: List[float]
+    costs: Tuple[List[float], List[float]]
         The evaluator results
     """
     evaluator = rt_mod.time_evaluator(
@@ -119,3 +119,29 @@ def run_evaluator_common(
         repeated_costs.append(profile_result.results)
     costs = [float(cost) for cost in itertools.chain.from_iterable(repeated_costs)]
     return costs
+
+def run_evaluator_bw(
+    rt_mod: Module,
+    device: Device,
+    evaluator_config: EvaluatorConfig,
+    repeated_args: List[T_ARGUMENT_LIST],
+) -> List[float]:
+    evaluator = rt_mod.time_bw_evaluator(
+        func_name=rt_mod.entry_name,
+        dev=device,
+        number=evaluator_config.number,
+        repeat=evaluator_config.repeat,
+        min_repeat_ms=evaluator_config.min_repeat_ms,
+        f_preproc="cache_flush_cpu_non_first_arg"
+        if evaluator_config.enable_cpu_cache_flush
+        else "",
+    )
+    repeated_costs: List[List[float]] = []
+    for args in repeated_args:
+        device.sync()
+        profile_result = evaluator(*args)
+        repeated_costs.append(profile_result.results)
+    
+    costs_lat = [float(cost_lat) for cost_lat, cost_bw in itertools.chain.from_iterable(repeated_costs)]
+    costs_bw = [float(cost_bw) for cost_lat, cost_bw in itertools.chain.from_iterable(repeated_costs)]
+    return (costs_lat, costs_bw)

@@ -43,15 +43,23 @@ class AddToDatabaseNode : public MeasureCallbackNode {
       RunnerResult result = runner_results[i];
       MeasureCandidate candidate = measure_candidates[i];
       ffi::Array<FloatImm> run_secs{nullptr};
+      ffi::Array<FloatImm> bw_mbps{nullptr};
       if (result->run_secs.defined()) {
         run_secs = result->run_secs.value();
       } else {
         run_secs = ffi::Array<FloatImm>{FloatImm(DataType::Float(32), 1e10)};
       }
+      if (result->bw_mbps.defined()) {
+        bw_mbps = result->bw_mbps.value();
+      } else {
+        bw_mbps = ffi::Array<FloatImm>{FloatImm(DataType::Float(32), 1e10)};
+      }
+
       database->CommitTuningRecord(TuningRecord(
           /*trace=*/candidate->sch->trace().value(),
           /*workload=*/workload,
           /*run_secs=*/run_secs,
+          /*bw_mbps=*/bw_mbps,
           /*target=*/target,
           /*args_info=*/candidate->args_info));
     }

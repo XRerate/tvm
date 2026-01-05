@@ -413,6 +413,27 @@ inline double GetRunMsMedian(const RunnerResult& runner_result) {
 }
 
 /*!
+ * \brief Get the median of the bandwidth from RunnerResult in MB/s
+ * \param runner_result The results from RunnerResult
+ * \return The median of the bandwidth in MB/s
+ */
+inline double GetBandwidthMbpsMedian(const RunnerResult& runner_result) {
+  ffi::Array<FloatImm> bw_mbps = runner_result->bw_mbps.value();
+  ICHECK(!bw_mbps.empty());
+  std::vector<double> v;
+  v.reserve(bw_mbps.size());
+  std::transform(bw_mbps.begin(), bw_mbps.end(), std::back_inserter(v),
+                 [](const FloatImm& f) -> double { return f->value; });
+  std::sort(v.begin(), v.end());
+  int n = v.size();
+  if (n % 2 == 0) {
+    return (v[n / 2 - 1] + v[n / 2]) * 0.5 * 1000.0;
+  } else {
+    return v[n / 2] * 1000.0;
+  }
+}
+
+/*!
  * \brief Convert the given object to an array of floating point numbers
  * \param obj The object to be converted
  * \return The array of floating point numbers

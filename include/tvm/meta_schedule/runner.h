@@ -73,6 +73,8 @@ class RunnerResultNode : public runtime::Object {
  public:
   /*! \brief The run time in seconds.*/
   ffi::Optional<ffi::Array<FloatImm>> run_secs;
+  /*! \brief The bandwidth in MB/s. */
+  ffi::Optional<ffi::Array<FloatImm>> bw_mbps;
   /*! \brief The error message, if any. */
   ffi::Optional<ffi::String> error_msg;
 
@@ -80,6 +82,7 @@ class RunnerResultNode : public runtime::Object {
     namespace refl = tvm::ffi::reflection;
     refl::ObjectDef<RunnerResultNode>()
         .def_ro("run_secs", &RunnerResultNode::run_secs)
+        .def_ro("bw_mbps", &RunnerResultNode::bw_mbps)
         .def_ro("error_msg", &RunnerResultNode::error_msg);
   }
   TVM_FFI_DECLARE_OBJECT_INFO_FINAL("meta_schedule.RunnerResult", RunnerResultNode,
@@ -98,6 +101,7 @@ class RunnerResult : public runtime::ObjectRef {
    * \brief The error message, if any.
    */
   TVM_DLL explicit RunnerResult(ffi::Optional<ffi::Array<FloatImm>> run_secs,
+                                ffi::Optional<ffi::Array<FloatImm>> bw_mbps,
                                 ffi::Optional<ffi::String> error_msg);
   TVM_FFI_DEFINE_OBJECT_REF_METHODS_NOTNULLABLE(RunnerResult, runtime::ObjectRef, RunnerResultNode);
 };

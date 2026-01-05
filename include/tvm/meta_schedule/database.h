@@ -118,6 +118,8 @@ class TuningRecordNode : public runtime::Object {
   Workload workload{ffi::UnsafeInit()};
   /*! \brief The profiling result in seconds. */
   ffi::Optional<ffi::Array<FloatImm>> run_secs;
+  /*! \brief The bandwidth in MB/s. */
+  ffi::Optional<ffi::Array<FloatImm>> bw_mbps;
   /*! \brief The target for tuning. */
   ffi::Optional<Target> target;
   /*! \brief The argument information. */
@@ -129,6 +131,7 @@ class TuningRecordNode : public runtime::Object {
         .def_ro("trace", &TuningRecordNode::trace)
         .def_ro("workload", &TuningRecordNode::workload)
         .def_ro("run_secs", &TuningRecordNode::run_secs)
+        .def_ro("bw_mbps", &TuningRecordNode::bw_mbps)
         .def_ro("target", &TuningRecordNode::target)
         .def_ro("args_info", &TuningRecordNode::args_info);
   }
@@ -162,11 +165,13 @@ class TuningRecord : public runtime::ObjectRef {
    \param trace The trace of the tuning record.
    \param workload The workload of the tuning record.
    \param run_secs The running time of the tuning record.
+   \param bw_mbps The bandwidth in MB/s.
    \param target The target of the tuning record.
    \param args_info The argument information of the tuning record.
   */
   TVM_DLL explicit TuningRecord(tir::Trace trace, Workload workload,
                                 ffi::Optional<ffi::Array<FloatImm>> run_secs,
+                                ffi::Optional<ffi::Array<FloatImm>> bw_mbps,
                                 ffi::Optional<Target> target,
                                 ffi::Optional<ffi::Array<ArgInfo>> args_info);
   /*!

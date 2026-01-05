@@ -75,12 +75,14 @@ Workload Workload::FromJSON(const ObjectRef& json_obj) {
 
 TuningRecord::TuningRecord(tir::Trace trace, Workload workload,
                            ffi::Optional<ffi::Array<FloatImm>> run_secs,
+                           ffi::Optional<ffi::Array<FloatImm>> bw_mbps,
                            ffi::Optional<Target> target,
                            ffi::Optional<ffi::Array<ArgInfo>> args_info) {
   ObjectPtr<TuningRecordNode> n = ffi::make_object<TuningRecordNode>();
   n->trace = trace;
   n->workload = workload;
   n->run_secs = run_secs;
+  n->bw_mbps = bw_mbps;
   n->target = target;
   n->args_info = args_info;
   this->data_ = n;
@@ -113,6 +115,7 @@ ObjectRef TuningRecordNode::AsJSON() const {
   }
   return ffi::Array<ObjectRef>{trace->AsJSON(false),  //
                                run_secs,              //
+                               bw_mbps,                //
                                json_target,           //
                                json_args_info};
 }
@@ -135,22 +138,27 @@ bool TuningRecordNode::IsValid() const {
 TuningRecord TuningRecord::FromJSON(const ObjectRef& json_obj, const Workload& workload) {
   tir::Trace trace{ffi::UnsafeInit()};
   ffi::Optional<ffi::Array<FloatImm>> run_secs;
+  ffi::Optional<ffi::Array<FloatImm>> bw_mbps;
   ffi::Optional<Target> target;
   ffi::Optional<ffi::Array<ArgInfo>> args_info;
   try {
     const ffi::ArrayObj* json_array = json_obj.as<ffi::ArrayObj>();
-    CHECK(json_array && json_array->size() == 4);
+    CHECK(json_array && json_array->size() == 5);
     // Load json[1] => run_secs
     if (json_array->at(1) != nullptr) {
       run_secs = AsFloatArray(json_array->at(1).cast<ObjectRef>());
     }
-    // Load json[2] => target
+    // Load json[2] => bw_mbps
     if (json_array->at(2) != nullptr) {
-      target = Target(json_array->at(2).cast<ffi::Map<ffi::String, ffi::Any>>());
+      bw_mbps = AsFloatArray(json_array->at(2).cast<ObjectRef>());
     }
-    // Load json[3] => args_info
+    // Load json[3] => target
     if (json_array->at(3) != nullptr) {
-      const ffi::ArrayObj* json_args_info = json_array->at(3).cast<const ffi::ArrayObj*>();
+      target = Target(json_array->at(3).cast<ffi::Map<ffi::String, ffi::Any>>());
+    }
+    // Load json[4] => args_info
+    if (json_array->at(4) != nullptr) {
+      const ffi::ArrayObj* json_args_info = json_array->at(4).cast<const ffi::ArrayObj*>();
       ffi::Array<ArgInfo> info;
       info.reserve(json_args_info->size());
       for (Any json_arg_info : *json_args_info) {
@@ -171,7 +179,7 @@ TuningRecord TuningRecord::FromJSON(const ObjectRef& json_obj, const Workload& w
     LOG(FATAL) << "ValueError: Unable to parse the JSON object: " << json_obj
                << "\nThe error is: " << e.what();
   }
-  return TuningRecord(trace, workload, run_secs, target, args_info);
+  return TuningRecord(trace, workload, run_secs, bw_mbps, target, args_info);
 }
 
 /******** Database ********/
@@ -236,6 +244,7 @@ void DatabaseNode::DumpPruned(Database destination) {
     workload = destination->CommitWorkload(workload->mod);
     destination->CommitTuningRecord(TuningRecord(/*trace=*/record->trace, /*workload=*/workload,
                                                  /*run_secs=*/record->run_secs,
+                                                 /*bw_mbps=*/record->bw_mbps,
                                                  /*target=*/record->target,
                                                  /*args_info=*/record->args_info));
   }
@@ -300,8 +309,9 @@ TVM_FFI_STATIC_INIT_BLOCK() {
       .def("meta_schedule.WorkloadFromJSON", &Workload::FromJSON)
       .def("meta_schedule.TuningRecord",
            [](tir::Trace trace, Workload workload, ffi::Optional<ffi::Array<FloatImm>> run_secs,
-              ffi::Optional<Target> target, ffi::Optional<ffi::Array<ArgInfo>> args_info) {
-             return TuningRecord(trace, workload, run_secs, target, args_info);
+              ffi::Optional<ffi::Array<FloatImm>> bw_mbps, ffi::Optional<Target> target,
+              ffi::Optional<ffi::Array<ArgInfo>> args_info) {
+             return TuningRecord(trace, workload, run_secs, bw_mbps, target, args_info);
            })
       .def_method("meta_schedule.TuningRecordAsMeasureCandidate",
                   &TuningRecordNode::AsMeasureCandidate)

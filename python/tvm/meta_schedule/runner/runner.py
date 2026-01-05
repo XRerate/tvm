@@ -80,16 +80,20 @@ class RunnerResult(Object):
     ----------
     run_secs : Optional[List[float]]
         The run time in seconds.
+    bw_mbps : Optional[List[float]]
+        The bandwidth in MB/s.
     error_msg : Optional[str]
         The error message, if any.
     """
 
     run_secs: Optional[List[float]]
+    bw_mbps: Optional[List[float]]
     error_msg: Optional[str]
 
     def __init__(
         self,
         run_secs: Optional[List[float]],
+        bw_mbps: Optional[List[float]],
         error_msg: Optional[str],
     ) -> None:
         """Constructor
@@ -98,12 +102,15 @@ class RunnerResult(Object):
         ----------
         run_secs : Optional[List[float]]
             The run time in seconds.
+        bw_mbps : Optional[List[float]]
+            The bandwidth in MB/s.
         error_msg : Optional[str]
             The error message, if any.
         """
         self.__init_handle_by_constructor__(
             _ffi_api.RunnerResult,  # type: ignore # pylint: disable=no-member
             run_secs,
+            bw_mbps,
             error_msg,
         )
 

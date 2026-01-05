@@ -93,7 +93,7 @@ void SendToRunner(TaskRecordNode* self, const Runner& runner) {
           /*f_done=*/[]() -> bool { return true; },
           /*f_result=*/
           [msg = builder_result->error_msg]() -> RunnerResult {
-            return RunnerResult(std::nullopt, msg);
+            return RunnerResult(std::nullopt, std::nullopt, msg);
           }));
     } else {
       results.push_back(futures[j++]);
@@ -115,14 +115,17 @@ void TaskCleanUp(TaskRecordNode* self, int task_id, const ffi::Array<RunnerResul
     ffi::Optional<ffi::String> error_msg = std::nullopt;
     int trials = self->latency_ms.size() + 1;
     double run_ms = 1e9;
+    double bandwidth_mbps = 1e9;
     if ((error_msg = builder_result->error_msg)) {
       ++self->build_error_count;
     } else if ((error_msg = runner_result->error_msg)) {
       ++self->run_error_count;
     } else {
       run_ms = GetRunMsMedian(runner_result);
+      bandwidth_mbps = GetBandwidthMbpsMedian(runner_result);
     }
     self->latency_ms.push_back(run_ms);
+    self->bandwidth_mbps.push_back(bandwidth_mbps);
     if (error_msg) {
       const tir::Schedule& sch = candidate->sch;
       std::string err = error_msg.value();

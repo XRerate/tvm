@@ -48,6 +48,14 @@ target_include_directories(
   PUBLIC DMLC_PATH
 )
 
+if(BUILD_FOR_ANDROID)
+  target_include_directories(
+    tvm_rpc
+    PUBLIC "../../3rdparty/GPUBandwidthProfiler/include"
+  )
+  target_link_libraries(tvm_rpc PRIVATE GPUBandwidthProfiler)
+endif()
+
 target_link_libraries(tvm_rpc PUBLIC tvm_ffi_header)
 
 if (BUILD_FOR_ANDROID AND USE_HEXAGON)
@@ -59,6 +67,7 @@ if (BUILD_FOR_ANDROID AND USE_HEXAGON)
   else()
     message(WARNING "Could not locate some Hexagon SDK components")
   endif()
+  message(STATUS "DSPRPC_LIB_DIRS: ${DSPRPC_LIB_DIRS}")
   list(APPEND TVM_RPC_LINKER_LIBS cdsprpc log)
 endif()
 

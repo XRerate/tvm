@@ -53,6 +53,8 @@ class TaskRecordNode : public runtime::Object {
   int run_error_count = 0;
   /*! \brief The latency of each run, in milliseconds. */
   std::vector<double> latency_ms = {};
+  /*! \brief The bandwidth of each run, in MB/s. */
+  std::vector<double> bandwidth_mbps = {};
   /*! \brief The measure candidates. */
   ffi::Optional<ffi::Array<MeasureCandidate>> measure_candidates = std::nullopt;
   /*! \brief The building results. */

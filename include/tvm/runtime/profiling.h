@@ -583,6 +583,11 @@ ffi::Function WrapTimeEvaluator(ffi::Function f, Device dev, int number, int rep
                                 int cooldown_interval_ms, int repeats_to_cooldown,
                                 int cache_flush_bytes = 0, ffi::Function f_preproc = nullptr);
 
+ffi::Function WrapTimeBwEvaluator(ffi::Function f, Device dev, int number, int repeat,
+                                  int min_repeat_ms, int limit_zero_time_iterations,
+                                  int cooldown_interval_ms, int repeats_to_cooldown,
+                                  int cache_flush_bytes = 0, ffi::Function f_preproc = nullptr);
+
 }  // namespace profiling
 }  // namespace runtime
 }  // namespace tvm
