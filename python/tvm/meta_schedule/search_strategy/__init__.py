@@ -21,6 +21,7 @@ to generate measure candidates.
 """
 
 from .evolutionary_search import EvolutionarySearch
+from .nsgaii_search import NSGAIISearch
 from .replay_func import ReplayFunc
 from .replay_trace import ReplayTrace
 from .search_strategy import MeasureCandidate, PySearchStrategy, SearchStrategy, create

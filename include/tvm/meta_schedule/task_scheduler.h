@@ -138,10 +138,16 @@ class TaskSchedulerNode : public runtime::Object {
   ffi::Array<MeasureCallback> measure_callbacks_;
   /*! \brief The database used in tuning */
   ffi::Optional<Database> database_;
-  /*! \brief The cost model used in tuning */
-  ffi::Optional<CostModel> cost_model_;
+  /*! \brief The latency cost model used in tuning */
+  ffi::Optional<CostModel> latency_cost_model_;
+  /*! \brief The bandwidth cost model used in tuning */
+  ffi::Optional<CostModel> bandwidth_cost_model_;
   /*! \brief The number of remaining tasks to be tuned. */
   int remaining_tasks_;
+  /*! \brief The reference point for latency*/
+  ffi::Optional<double> latency_reference_point;
+  /*! \brief The reference point for bandwidth*/
+  ffi::Optional<double> bandwidth_reference_point;
 
   /*! \brief The default destructor. */
   virtual ~TaskSchedulerNode() = default;
@@ -152,8 +158,11 @@ class TaskSchedulerNode : public runtime::Object {
         .def_ro("tasks_", &TaskSchedulerNode::tasks_)
         .def_ro("measure_callbacks_", &TaskSchedulerNode::measure_callbacks_)
         .def_ro("database_", &TaskSchedulerNode::database_)
-        .def_ro("cost_model_", &TaskSchedulerNode::cost_model_)
-        .def_ro("remaining_tasks_", &TaskSchedulerNode::remaining_tasks_);
+        .def_ro("latency_cost_model_", &TaskSchedulerNode::latency_cost_model_)
+        .def_ro("bandwidth_cost_model_", &TaskSchedulerNode::bandwidth_cost_model_)
+        .def_ro("remaining_tasks_", &TaskSchedulerNode::remaining_tasks_)
+        .def_ro("latency_reference_point", &TaskSchedulerNode::latency_reference_point)
+        .def_ro("bandwidth_reference_point", &TaskSchedulerNode::bandwidth_reference_point);
   }
 
   /*!
@@ -167,6 +176,9 @@ class TaskSchedulerNode : public runtime::Object {
    * \return The results from the runner.
    */
   virtual ffi::Array<RunnerResult> JoinRunningTask(int task_id);
+
+  virtual void SetReferencePoint(TuneContext task, Builder builder, Runner runner);
+
   /*!
    * \brief Jointly tune a given list of tasks.
    * \param tasks The tasks to be tuned
@@ -178,7 +190,8 @@ class TaskSchedulerNode : public runtime::Object {
    * \param runner The MetaSchedule runner
    * \param measure_callbacks The callbacks to be called after each measurement
    * \param database The database used in tuning
-   * \param cost_model The cost model used in tuning
+   * \param latency_cost_model The latency cost model used in tuning
+   * \param bandwidth_cost_model The bandwidth cost model used in tuning
    */
   virtual void Tune(ffi::Array<TuneContext> tasks,                  //
                     ffi::Array<FloatImm> task_weights,              //
@@ -189,7 +202,8 @@ class TaskSchedulerNode : public runtime::Object {
                     Runner runner,                                  //
                     ffi::Array<MeasureCallback> measure_callbacks,  //
                     ffi::Optional<Database> database,               //
-                    ffi::Optional<CostModel> cost_model);
+                    ffi::Optional<CostModel> latency_cost_model,    //
+                    ffi::Optional<CostModel> bandwidth_cost_model);
   /*!
    * \brief Terminate a task
    * \param task_id The id of the task to be terminated
@@ -222,6 +236,9 @@ class PyTaskSchedulerNode : public TaskSchedulerNode {
    * \param task_id The task id to be joined.
    */
   using FJoinRunningTask = ffi::TypedFunction<ffi::Array<RunnerResult>(int)>;
+  /*! \brief The function type of `SetReferencePoint` method. */
+  using FSetReferencePoint =
+      ffi::TypedFunction<void(TuneContext task, Builder builder, Runner runner)>;
   /*! \brief The function type of `Tune` method. */
   using FTune = ffi::TypedFunction<void(ffi::Array<TuneContext> tasks,                  //
                                         ffi::Array<FloatImm> task_weights,              //
@@ -232,12 +249,15 @@ class PyTaskSchedulerNode : public TaskSchedulerNode {
                                         Runner runner,                                  //
                                         ffi::Array<MeasureCallback> measure_callbacks,  //
                                         ffi::Optional<Database> database,               //
-                                        ffi::Optional<CostModel> cost_model)>;
+                                        ffi::Optional<CostModel> latency_cost_model,    //
+                                        ffi::Optional<CostModel> bandwidth_cost_model)>;
 
   /*! \brief The packed function to the `NextTaskId` function. */
   FNextTaskId f_next_task_id;
   /*! \brief The packed function to the `JoinRunningTask` function. */
   FJoinRunningTask f_join_running_task;
+  /*! \brief The packed function to the `SetReferencePoint` function. */
+  FSetReferencePoint f_set_reference_point;
   /*! \brief The packed function to the `Tune` function. */
   FTune f_tune;
 
@@ -248,10 +268,12 @@ class PyTaskSchedulerNode : public TaskSchedulerNode {
 
   int NextTaskId() final;
   ffi::Array<RunnerResult> JoinRunningTask(int task_id) final;
+  void SetReferencePoint(TuneContext task, Builder builder, Runner runner) final;
   void Tune(ffi::Array<TuneContext> tasks, ffi::Array<FloatImm> task_weights, int max_trials_global,
             int max_trials_per_task, int num_trials_per_iter, Builder builder, Runner runner,
             ffi::Array<MeasureCallback> measure_callbacks, ffi::Optional<Database> database,
-            ffi::Optional<CostModel> cost_model) final;
+            ffi::Optional<CostModel> latency_cost_model,
+            ffi::Optional<CostModel> bandwidth_cost_model) final;
   TVM_FFI_DECLARE_OBJECT_INFO_FINAL("meta_schedule.PyTaskScheduler", PyTaskSchedulerNode,
                                     TaskSchedulerNode);
 };

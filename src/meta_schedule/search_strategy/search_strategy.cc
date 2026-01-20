@@ -39,9 +39,10 @@ void PySearchStrategyNode::InitializeWithTuneContext(const TuneContext& context)
 void PySearchStrategyNode::PreTuning(int max_trials, int num_trials_per_iter,
                                      const ffi::Array<tir::Schedule>& design_spaces,
                                      const ffi::Optional<Database>& database,
-                                     const ffi::Optional<CostModel>& cost_model) {
+                                     const ffi::Optional<CostModel>& latency_cost_model,
+                                     const ffi::Optional<CostModel>& bandwidth_cost_model) {
   ICHECK(f_pre_tuning != nullptr) << "PySearchStrategy's PreTuning method not implemented!";
-  f_pre_tuning(max_trials, num_trials_per_iter, design_spaces, database, cost_model);
+  f_pre_tuning(max_trials, num_trials_per_iter, design_spaces, database, latency_cost_model, bandwidth_cost_model);
 }
 
 void PySearchStrategyNode::PostTuning() {

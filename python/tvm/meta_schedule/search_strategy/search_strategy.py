@@ -105,7 +105,8 @@ class SearchStrategy(Object):
         num_trials_per_iter: int,
         design_spaces: List[Schedule],
         database: Optional["Database"] = None,
-        cost_model: Optional["CostModel"] = None,
+        latency_cost_model: Optional["CostModel"] = None,
+        bandwidth_cost_model: Optional["CostModel"] = None,
     ) -> None:
         """Pre-tuning for the search strategy.
 
@@ -128,7 +129,8 @@ class SearchStrategy(Object):
             num_trials_per_iter,
             design_spaces,
             database,
-            cost_model,
+            latency_cost_model,
+            bandwidth_cost_model,
         )
 
     def post_tuning(self) -> None:
@@ -181,6 +183,7 @@ class SearchStrategy(Object):
             "evolutionary",
             "replay-trace",
             "replay-func",
+            "nsgaii",
         ] = "evolutionary",
         *args,
         **kwargs,
@@ -190,6 +193,7 @@ class SearchStrategy(Object):
             EvolutionarySearch,
             ReplayFunc,
             ReplayTrace,
+            NSGAIISearch,
         )
 
         if kind == "evolutionary":
@@ -198,6 +202,8 @@ class SearchStrategy(Object):
             return ReplayTrace(*args, **kwargs)
         if kind == "replay-func":
             return ReplayFunc(*args, **kwargs)  # type: ignore
+        if kind == "nsgaii":
+            return NSGAIISearch(*args, **kwargs)
         raise ValueError(f"Unknown SearchStrategy: {kind}")
 
 

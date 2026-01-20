@@ -92,7 +92,8 @@ class SearchStrategyNode : public runtime::Object {
    * \param num_trials_per_iter The number of trials per iteration.
    * \param design_spaces The design spaces used during tuning process.
    * \param database The database used during tuning process.
-   * \param cost_model The cost model used during tuning process.
+   * \param latency_cost_model The latency cost model used during tuning process.
+   * \param bandwidth_cost_model The bandwidth cost model used during tuning process.
    * \note Pre-tuning is supposed to be called before the tuning process and after the
    *  initialization. Because the search strategy is stateful, we can always call pretuning
    *  and reset the search strategy.
@@ -100,7 +101,8 @@ class SearchStrategyNode : public runtime::Object {
   virtual void PreTuning(int max_trials, int num_trials_per_iter,
                          const ffi::Array<tir::Schedule>& design_spaces,
                          const ffi::Optional<Database>& database,
-                         const ffi::Optional<CostModel>& cost_model) = 0;
+                         const ffi::Optional<CostModel>& latency_cost_model,
+                         const ffi::Optional<CostModel>& bandwidth_cost_model = std::nullopt) = 0;
 
   /*!
    * \brief Post-tuning for the search strategy.
@@ -149,7 +151,7 @@ class SearchStrategy : public runtime::ObjectRef {
    */
   using FPreTuning = ffi::TypedFunction<void(
       int max_trials, int num_trials_per_iter, const ffi::Array<tir::Schedule>&,
-      const ffi::Optional<Database>&, const ffi::Optional<CostModel>&)>;
+      const ffi::Optional<Database>&, const ffi::Optional<CostModel>&, const ffi::Optional<CostModel>&)>;
   /*! \brief The function type of `PostTuning` method. */
   using FPostTuning = ffi::TypedFunction<void()>;
   /*!
@@ -216,6 +218,15 @@ class SearchStrategy : public runtime::ObjectRef {
                                                    int genetic_max_fail_count,  //
                                                    double eps_greedy);
 
+  TVM_DLL static SearchStrategy NSGAIISearch(int population_size,         //
+                                             double init_measured_ratio,  //
+                                             int init_min_unmeasured,     //
+                                             int max_fail_count,          //
+                                             int genetic_num_iters,       //
+                                             double genetic_mutate_prob,  //
+                                             int genetic_max_fail_count,  //
+                                             double eps_greedy);
+
   TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(SearchStrategy, ObjectRef, SearchStrategyNode);
 };
 
@@ -257,7 +268,8 @@ class PySearchStrategyNode : public SearchStrategyNode {
   void PreTuning(int max_trials, int num_trials_per_iter,
                  const ffi::Array<tir::Schedule>& design_spaces,
                  const ffi::Optional<Database>& database,
-                 const ffi::Optional<CostModel>& cost_model) final;
+                 const ffi::Optional<CostModel>& latency_cost_model,
+                 const ffi::Optional<CostModel>& bandwidth_cost_model = std::nullopt) final;
   void PostTuning() final;
   ffi::Optional<ffi::Array<MeasureCandidate>> GenerateMeasureCandidates() final;
   void NotifyRunnerResults(const ffi::Array<MeasureCandidate>& measure_candidates,

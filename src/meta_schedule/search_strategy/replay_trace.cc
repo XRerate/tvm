@@ -104,7 +104,8 @@ class ReplayTraceNode : public SearchStrategyNode {
   void PreTuning(int max_trials, int num_trials_per_iter,
                  const ffi::Array<tir::Schedule>& design_spaces,
                  const ffi::Optional<Database>& database,
-                 const ffi::Optional<CostModel>& cost_model) final {
+                 const ffi::Optional<CostModel>& latency_cost_model,
+                 const ffi::Optional<CostModel>& bandwidth_cost_model = std::nullopt) final {
     ICHECK(!design_spaces.empty());
     CHECK(this->state_ == nullptr)
         << "ValueError: `PreTuning` is already invoked without corresponding `PostTuning`.";

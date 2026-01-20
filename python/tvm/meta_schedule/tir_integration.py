@@ -51,7 +51,8 @@ def tune_tir(  # pylint: disable=too-many-locals
     builder: Builder.BuilderType = "local",
     runner: Runner.RunnerType = "local",
     database: Database.DatabaseType = "json",
-    cost_model: CostModel.CostModelType = "xgb",
+    latency_cost_model: CostModel.CostModelType = "xgb",
+    bandwidth_cost_model: Optional[CostModel.CostModelType] = None,
     measure_callbacks: MeasureCallback.CallbackListType = "default",
     task_scheduler: TaskScheduler.TaskSchedulerType = "gradient",
     space: SpaceGenerator.SpaceGeneratorType = "post-order-apply",
@@ -84,8 +85,10 @@ def tune_tir(  # pylint: disable=too-many-locals
         The runner.
     database : Database.DatabaseType
         The database.
-    cost_model : CostModel.CostModelType
+    latency_cost_model : CostModel.CostModelType
         The cost model.
+    bandwidth_cost_model : Optional[CostModel.CostModelType]
+        The bandwidth cost model.
     measure_callbacks : MeasureCallback.CallbackListType
         The measure callbacks.
     task_scheduler : TaskScheduler.TaskSchedulerType
@@ -119,6 +122,7 @@ def tune_tir(  # pylint: disable=too-many-locals
 
     task_names = [x for x, _ in named_tasks]
     tasks: List[TuneContext] = []
+
     for task_name, task_func, logger, rand_state in zip(
         task_names,
         [x for _, x in named_tasks],
@@ -143,6 +147,7 @@ def tune_tir(  # pylint: disable=too-many-locals
                 logger=logger,
             ).clone()
         )
+
     return tune_tasks(
         tasks=tasks,
         task_weights=[1.0] * len(tasks),
@@ -153,13 +158,13 @@ def tune_tir(  # pylint: disable=too-many-locals
         builder=builder,
         runner=runner,
         database=database,
-        cost_model=cost_model,
+        latency_cost_model=latency_cost_model,
+        bandwidth_cost_model=bandwidth_cost_model,
         measure_callbacks=measure_callbacks,
         task_scheduler=task_scheduler,
         module_equality=module_equality,
         post_optimization=post_optimization,
     )
-
 
 @register_global_func("tvm.meta_schedule.tune_tir")
 def _tune_tir(
@@ -172,7 +177,8 @@ def _tune_tir(
     builder: Builder.BuilderType = "local",
     runner: Runner.RunnerType = "local",
     database: Database.DatabaseType = "json",
-    cost_model: CostModel.CostModelType = "xgb",
+    latency_cost_model: CostModel.CostModelType = "xgb",
+    bandwidth_cost_model: Optional[CostModel.CostModelType] = None,
     measure_callbacks: MeasureCallback.CallbackListType = "default",
     task_scheduler: TaskScheduler.TaskSchedulerType = "round-robin",
     space: SpaceGenerator.SpaceGeneratorType = "post-order-apply",
@@ -200,7 +206,10 @@ def _tune_tir(
         The runner.
     database : Database.DatabaseType
         The database.
-    cost_model : CostModel.CostModelType
+    latency_cost_model : CostModel.CostModelType
+        The latency cost model.
+    bandwidth_cost_model : Optional[CostModel.CostModelType]
+        The bandwidth cost model.
         The cost model.
     measure_callbacks : MeasureCallback.CallbackListType
         The measure callbacks.
@@ -231,7 +240,8 @@ def _tune_tir(
         builder=builder,
         runner=runner,
         database=database,
-        cost_model=cost_model,
+        latency_cost_model=latency_cost_model,
+        bandwidth_cost_model=bandwidth_cost_model,
         measure_callbacks=measure_callbacks,
         task_scheduler=task_scheduler,
         space=space,

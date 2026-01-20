@@ -31,10 +31,11 @@ class UpdateCostModelNode : public MeasureCallbackNode {
              const ffi::Array<RunnerResult>& runner_results) final {
     auto _ = Profiler::TimedScope("MeasureCallback/UpdateCostModel");
     const TaskRecord& task = task_scheduler->tasks_[task_id];
-    if (!task_scheduler->cost_model_.defined()) {
+    if (!task_scheduler->latency_cost_model_.defined() &&
+        !task_scheduler->bandwidth_cost_model_.defined()) {
       return;
     }
-    CostModel cost_model = task_scheduler->cost_model_.value();
+
     ICHECK(task->measure_candidates.defined()) << "Task's measure candidates must be present!";
     ICHECK_EQ(measure_candidates.size(), builder_results.size());
     ICHECK_EQ(runner_results.size(), builder_results.size());
@@ -52,7 +53,16 @@ class UpdateCostModelNode : public MeasureCallbackNode {
         pruned_runner_result.push_back(runner_results[i]);
       }
     }
-    cost_model->Update(task->ctx, pruned_candidate, pruned_runner_result);
+
+    if (task_scheduler->latency_cost_model_.defined()) {
+      task_scheduler->latency_cost_model_.value()->Update(task->ctx, pruned_candidate,
+                                                          pruned_runner_result);
+    }
+
+    if (task_scheduler->bandwidth_cost_model_.defined()) {
+      task_scheduler->bandwidth_cost_model_.value()->Update(task->ctx, pruned_candidate,
+                                                            pruned_runner_result);
+    }
   }
 
   static void RegisterReflection() {

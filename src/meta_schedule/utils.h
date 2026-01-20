@@ -427,9 +427,9 @@ inline double GetBandwidthMbpsMedian(const RunnerResult& runner_result) {
   std::sort(v.begin(), v.end());
   int n = v.size();
   if (n % 2 == 0) {
-    return (v[n / 2 - 1] + v[n / 2]) * 0.5 * 1000.0;
+    return (v[n / 2 - 1] + v[n / 2]) * 0.5;
   } else {
-    return v[n / 2] * 1000.0;
+    return v[n / 2];
   }
 }
 
@@ -659,6 +659,75 @@ class BlockCollector : public tir::StmtVisitor {
 
 void JSONFileAppendLine(const ffi::String& path, const std::string& line);
 std::vector<Any> JSONFileReadLines(const ffi::String& path, int num_threads, bool allow_missing);
+
+/**************** Pareto Optimization Utilities ****************/
+
+/*!
+ * \brief Check if solution A dominates solution B in a minimization problem.
+ * A dominates B if A is better (lower) in at least one objective and not worse (higher) in any.
+ * \param a_obj1 First objective value of solution A.
+ * \param a_obj2 Second objective value of solution A.
+ * \param b_obj1 First objective value of solution B.
+ * \param b_obj2 Second objective value of solution B.
+ * \return True if A dominates B.
+ */
+inline bool ParetoDominates(double a_obj1, double a_obj2, double b_obj1, double b_obj2) {
+  bool better_obj1 = a_obj1 < b_obj1;
+  bool better_obj2 = a_obj2 < b_obj2;
+  bool worse_obj1 = a_obj1 > b_obj1;
+  bool worse_obj2 = a_obj2 > b_obj2;
+  // A dominates B if (A is better in at least one AND not worse in any)
+  return (better_obj1 || better_obj2) && !worse_obj1 && !worse_obj2;
+}
+
+/*!
+ * \brief Perform non-dominated sorting (NSGA-II algorithm).
+ * Assigns Pareto ranks to solutions based on dominance relationships.
+ * \param obj1_values Vector of first objective values (to be minimized).
+ * \param obj2_values Vector of second objective values (to be minimized).
+ * \return Vector of ranks, where rank 1 is the Pareto front.
+ */
+std::vector<int> NonDominatedSort(const std::vector<double>& obj1_values,
+                                  const std::vector<double>& obj2_values);
+
+/*!
+ * \brief Calculate crowding distance for solutions in a Pareto front.
+ * Boundary points get infinite distance. Other points get distance based on
+ * the normalized distance to neighbors in objective space.
+ * \param obj1_values Vector of first objective values.
+ * \param obj2_values Vector of second objective values.
+ * \return Vector of crowding distances corresponding to each solution.
+ */
+std::vector<double> CalculateCrowdingDistance(const std::vector<double>& obj1_values,
+                                              const std::vector<double>& obj2_values);
+
+/*!
+ * \brief Get the mean value from an array of FloatImm.
+ * \param arr The array of FloatImm.
+ * \param default_value The default value if array is empty.
+ * \return The mean value.
+ */
+double GetMeanFromFloatImmArray(const ffi::Optional<ffi::Array<FloatImm>>& arr,
+                                double default_value);
+
+/*!
+ * \brief Check if TuningRecord A dominates TuningRecord B.
+ * A dominates B if A is better in at least one objective and not worse in any.
+ * Objectives: minimize run_secs (time), minimize bw_mbps (bandwidth).
+ * \param a The first record.
+ * \param b The second record.
+ * \return True if A dominates B.
+ */
+bool TuningRecordDominates(const TuningRecord& a, const TuningRecord& b);
+
+/*!
+ * \brief Calculate crowding distance for TuningRecords in a Pareto front.
+ * \param records The records in the same Pareto rank.
+ * \return Vector of crowding distances corresponding to each record.
+ */
+std::vector<double> CalculateCrowdingDistanceForRecords(
+    const std::vector<TuningRecord>& records);
+
 }  // namespace meta_schedule
 }  // namespace tvm
 

@@ -38,7 +38,8 @@ def tune_tasks(
     builder: Builder.BuilderType = "local",
     runner: Runner.RunnerType = "local",
     database: Database.DatabaseType = "json",
-    cost_model: CostModel.CostModelType = "xgb",
+    latency_cost_model: CostModel.CostModelType = "xgb",
+    bandwidth_cost_model: Optional[CostModel.CostModelType] = None,
     measure_callbacks: MeasureCallback.CallbackListType = "default",
     task_scheduler: TaskScheduler.TaskSchedulerType = "gradient",
     module_equality: str = "structural",
@@ -109,16 +110,26 @@ def tune_tasks(
         runner = Runner.create(runner, max_workers=num_cores)
     if database == "json":
         database = Database.create(database, work_dir=work_dir, module_equality=module_equality)
+    elif database == "json_pareto":
+        database = Database.create(database, work_dir=work_dir, module_equality=module_equality)
     elif not isinstance(database, Database):
         database = Database.create(database, module_equality=module_equality)
-    if not isinstance(cost_model, CostModel):
-        cost_model = CostModel.create(cost_model, num_tuning_cores=num_cores, tree_method="auto")
+    if not isinstance(latency_cost_model, CostModel):
+        latency_cost_model = CostModel.create(latency_cost_model, num_tuning_cores=num_cores, tree_method="auto")
+    if bandwidth_cost_model is not None and not isinstance(bandwidth_cost_model, CostModel):
+        bandwidth_cost_model = CostModel.create(bandwidth_cost_model, num_tuning_cores=num_cores, tree_method="auto")
     if isinstance(measure_callbacks, MeasureCallback):
         measure_callbacks = [measure_callbacks]
     elif measure_callbacks == "default":
         measure_callbacks = MeasureCallback.create(measure_callbacks)
     if not isinstance(task_scheduler, TaskScheduler):
         task_scheduler = TaskScheduler.create(task_scheduler)
+
+    if len(tasks) > 1:
+        # Warn that multiple tasks are not supported
+        print("Warning: Multiple tasks are not supported. Only the first task will be tuned.")
+
+    task_scheduler.set_reference_point(tasks[0], builder, runner)
     task_scheduler.tune(
         tasks=tasks,
         task_weights=task_weights,
@@ -129,7 +140,8 @@ def tune_tasks(
         runner=runner,
         measure_callbacks=measure_callbacks,
         database=database,
-        cost_model=cost_model,
+        latency_cost_model=latency_cost_model,
+        bandwidth_cost_model=bandwidth_cost_model,
     )
     if post_optimization:
         post_opt = PostOpt(work_dir, tasks[0].target)

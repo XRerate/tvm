@@ -46,13 +46,14 @@ class GradientBasedNode final : public TaskSchedulerNode {
   void Tune(ffi::Array<TuneContext> tasks, ffi::Array<FloatImm> task_weights, int max_trials_global,
             int max_trials_per_task, int num_trials_per_iter, Builder builder, Runner runner,
             ffi::Array<MeasureCallback> measure_callbacks, ffi::Optional<Database> database,
-            ffi::Optional<CostModel> cost_model) final {
+            ffi::Optional<CostModel> latency_cost_model,
+            ffi::Optional<CostModel> bandwidth_cost_model = std::nullopt) final {
     int n_tasks = tasks.size();
     round_robin_rounds_ = 0;
     best_latency_history_.resize(n_tasks, std::vector<double>());
     TaskSchedulerNode::Tune(tasks, task_weights, max_trials_global, max_trials_per_task,
                             num_trials_per_iter, builder, runner, measure_callbacks, database,
-                            cost_model);
+                            latency_cost_model, bandwidth_cost_model);
   }
 
   int NextTaskId() final {

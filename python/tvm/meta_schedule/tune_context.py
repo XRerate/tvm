@@ -202,7 +202,7 @@ class TuneContext(Object):
         from .cost_model import RandomModel
         from .database import MemoryDatabase
         from .search_strategy import EvolutionarySearch
-
+        from .search_strategy import NSGAIISearch
         # pylint: enable=import-outside-toplevel
 
         if self.search_strategy is None:
@@ -213,10 +213,10 @@ class TuneContext(Object):
         if design_spaces is None:
             design_spaces = self.generate_design_space()
         if database is None:
-            if isinstance(self.search_strategy, EvolutionarySearch):
+            if isinstance(self.search_strategy, EvolutionarySearch) or isinstance(self.search_strategy, NSGAIISearch):
                 database = MemoryDatabase()  # type: ignore
         if cost_model is None:
-            if isinstance(self.search_strategy, EvolutionarySearch):
+            if isinstance(self.search_strategy, EvolutionarySearch) or isinstance(self.search_strategy, NSGAIISearch):
                 cost_model = RandomModel()  # type: ignore
         return self.search_strategy.pre_tuning(
             max_trials,

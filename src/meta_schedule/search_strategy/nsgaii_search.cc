@@ -19,6 +19,11 @@
 
 #include <tvm/ffi/reflection/registry.h>
 
+#include <algorithm>
+#include <limits>
+#include <unordered_map>
+#include <vector>
+
 #include "../module_equality.h"
 #include "../utils.h"
 
@@ -118,18 +123,15 @@ class SizedHeap {
 struct PerThreadData {
   IRModule mod{ffi::UnsafeInit()};
   TRandState rand_state{-1};
-  std::function<int32_t()> trace_sampler = nullptr;
   std::function<ffi::Optional<Mutator>()> mutator_sampler = nullptr;
 
   /*!
-   * \brief Set the value for the trace and mutator samplers per thread.
-   * \param scores The predicted score for the given samples.
+   * \brief Set the mutator sampler per thread.
    * \param genetic_mutate_prob The probability of mutation.
    * \param mutator_probs The probability of each mutator as a dict.
    */
-  void Set(const std::vector<double>& scores, double genetic_mutate_prob,
+  void Set(double genetic_mutate_prob,
            const ffi::Map<Mutator, FloatImm>& mutator_probs) {
-    trace_sampler = tir::MakeMultinomialSampler(&rand_state, scores);
     mutator_sampler = MakeMutatorSampler(genetic_mutate_prob, mutator_probs, &rand_state);
   }
 
@@ -236,7 +238,7 @@ ffi::Array<MeasureCandidate> AssembleCandidates(const std::vector<Schedule>& pic
 std::vector<double> PredictNormalizedScore(const std::vector<Schedule>& candidates,
                                            const TuneContext& context,
                                            const CostModel& cost_model) {
-  auto _ = Profiler::TimedScope("EvoSearch/Evolve/PredictNormalizedScore");
+  auto _ = Profiler::TimedScope("NSGAIISearch/Evolve/PredictNormalizedScore");
   ICHECK(!candidates.empty()) << "Candidates given for score prediction can not be empty list!";
   std::vector<double> scores = cost_model->Predict(context, AssembleCandidates(candidates));
   for (double& score : scores) {
@@ -247,15 +249,15 @@ std::vector<double> PredictNormalizedScore(const std::vector<Schedule>& candidat
 
 }  // namespace
 
-/**************** Evolutionary Search ****************/
+/**************** NSGA-II Search ****************/
 
-/*!\brief A search strategy that generates measure candidates using evolutionary search. */
-class EvolutionarySearchNode : public SearchStrategyNode {
+/*!\brief A search strategy that generates measure candidates using NSGA-II search. */
+class NSGAIISearchNode : public SearchStrategyNode {
  public:
   /*! \brief The state of the search strategy. */
   struct State {
     /*! \brief The search strategy itself */
-    EvolutionarySearchNode* self;
+    NSGAIISearchNode* self;
     /*! \brief The number of total trials. */
     int max_trials;
     /*! \brief The number of trials per iteration. */
@@ -277,14 +279,16 @@ class EvolutionarySearchNode : public SearchStrategyNode {
     IRModuleSet measured_workloads_;
     /*! \brief A Database for selecting useful candidates. */
     Database database_{ffi::UnsafeInit()};
-    /*! \brief A cost model helping to explore the search space */
-    CostModel cost_model_{ffi::UnsafeInit()};
+    /*! \brief A cost model helping to explore the search space for latency */
+    CostModel latency_cost_model_{ffi::UnsafeInit()};
+    /*! \brief A cost model helping to explore the search space for bandwidth */
+    CostModel bandwidth_cost_model_{ffi::UnsafeInit()};
     /*! \brief The token registered for the given workload in database. */
     Workload token_{ffi::UnsafeInit()};
 
-    explicit State(EvolutionarySearchNode* self, int max_trials, int num_trials_per_iter,
+    explicit State(NSGAIISearchNode* self, int max_trials, int num_trials_per_iter,
                    ffi::Array<Schedule> design_space_schedules, Database database,
-                   CostModel cost_model)
+                   CostModel latency_cost_model, CostModel bandwidth_cost_model)
         : self(self),
           max_trials(max_trials),
           num_trials_per_iter(num_trials_per_iter),
@@ -303,8 +307,11 @@ class EvolutionarySearchNode : public SearchStrategyNode {
         data.mod = DeepCopyIRModule(mod);
         data.rand_state = ForkSeed(&self->rand_state_);
       }
+      CHECK(database->GetTypeKey() == "meta_schedule.JSONParetoDatabase");
+
       this->database_ = database;
-      this->cost_model_ = cost_model;
+      this->latency_cost_model_ = latency_cost_model;
+      this->bandwidth_cost_model_ = bandwidth_cost_model;
       this->token_ = database->CommitWorkload(mod);
     }
 
@@ -337,9 +344,9 @@ class EvolutionarySearchNode : public SearchStrategyNode {
      */
     inline std::vector<Schedule> PickWithEpsGreedy(const std::vector<Schedule>& inits,
                                                    const std::vector<Schedule>& bests, int num);
-    /*! \brief An interface method to be called by it's counterpart in EvolutionarySearchNode */
+    /*! \brief An interface method to be called by it's counterpart in NSGAIISearchNode */
     inline ffi::Optional<ffi::Array<MeasureCandidate>> GenerateMeasureCandidates();
-    /*! \brief An interface method to be called by it's counterpart in EvolutionarySearchNode */
+    /*! \brief An interface method to be called by it's counterpart in NSGAIISearchNode */
     inline void NotifyRunnerResults(const ffi::Array<MeasureCandidate>& measure_candidates,
                                     const ffi::Array<RunnerResult>& results);
     /*!
@@ -350,7 +357,7 @@ class EvolutionarySearchNode : public SearchStrategyNode {
     inline size_t ModuleHash(const IRModule& mod) const;
   };
 
-  /*! \brief The tuning context of the evolutionary search strategy. */
+  /*! \brief The tuning context of the NSGA-II search strategy. */
   const TuneContextNode* ctx_{nullptr};
   /*! \brief The postprocessors */
   ffi::Array<Postproc> postprocs_;
@@ -362,7 +369,7 @@ class EvolutionarySearchNode : public SearchStrategyNode {
   std::unique_ptr<State> state_ = nullptr;
 
   /*** Configuration: global ***/
-  /*! \brief The population size in the evolutionary search. */
+  /*! \brief The population size in the NSGA-II search. */
   int population_size;
   /*!
    * \brief The maximum number of iterations before early stopping to confirm the search space is
@@ -389,19 +396,19 @@ class EvolutionarySearchNode : public SearchStrategyNode {
 
   static void RegisterReflection() {
     namespace refl = tvm::ffi::reflection;
-    refl::ObjectDef<EvolutionarySearchNode>()
-        .def_ro("population_size", &EvolutionarySearchNode::population_size)
+    refl::ObjectDef<NSGAIISearchNode>()
+        .def_ro("population_size", &NSGAIISearchNode::population_size)
         .def_ro("num_empty_iters_before_early_stop",
-                &EvolutionarySearchNode::num_empty_iters_before_early_stop)
-        .def_ro("init_measured_ratio", &EvolutionarySearchNode::init_measured_ratio)
-        .def_ro("init_min_unmeasured", &EvolutionarySearchNode::init_min_unmeasured)
-        .def_ro("max_fail_count", &EvolutionarySearchNode::max_fail_count)
-        .def_ro("genetic_num_iters", &EvolutionarySearchNode::genetic_num_iters)
-        .def_ro("genetic_mutate_prob", &EvolutionarySearchNode::genetic_mutate_prob)
-        .def_ro("genetic_max_fail_count", &EvolutionarySearchNode::genetic_max_fail_count)
-        .def_ro("eps_greedy", &EvolutionarySearchNode::eps_greedy);
+                &NSGAIISearchNode::num_empty_iters_before_early_stop)
+        .def_ro("init_measured_ratio", &NSGAIISearchNode::init_measured_ratio)
+        .def_ro("init_min_unmeasured", &NSGAIISearchNode::init_min_unmeasured)
+        .def_ro("max_fail_count", &NSGAIISearchNode::max_fail_count)
+        .def_ro("genetic_num_iters", &NSGAIISearchNode::genetic_num_iters)
+        .def_ro("genetic_mutate_prob", &NSGAIISearchNode::genetic_mutate_prob)
+        .def_ro("genetic_max_fail_count", &NSGAIISearchNode::genetic_max_fail_count)
+        .def_ro("eps_greedy", &NSGAIISearchNode::eps_greedy);
   }
-  TVM_FFI_DECLARE_OBJECT_INFO_FINAL("meta_schedule.EvolutionarySearch", EvolutionarySearchNode,
+  TVM_FFI_DECLARE_OBJECT_INFO_FINAL("meta_schedule.NSGAIISearch", NSGAIISearchNode,
                                     SearchStrategyNode);
 
   void InitializeWithTuneContext(const TuneContext& ctx) final {
@@ -422,23 +429,28 @@ class EvolutionarySearchNode : public SearchStrategyNode {
   void PreTuning(int max_trials, int num_trials_per_iter, const ffi::Array<Schedule>& design_spaces,
                  const ffi::Optional<Database>& database,
                  const ffi::Optional<CostModel>& latency_cost_model,
-                 const ffi::Optional<CostModel>& bandwidth_cost_model = std::nullopt) final {
+                 const ffi::Optional<CostModel>& bandwidth_cost_model) final {
     ICHECK(!design_spaces.empty());
     CHECK(this->ctx_ != nullptr) << "ValueError: Did you forget to initialize the TuneContext?";
     CHECK(database.defined())
-        << "ValueError: Database is not supplied in PreTuning. Evolutionary"
+        << "ValueError: Database is not supplied in PreTuning. NSGA-II"
            "search algorithm requires a database to be present, so that it "
            "could sample from previously-explored population. If you do not "
            "intent to store data on disk, please use `tvm.meta_schedule.database.MemoryDatabase`";
     CHECK(latency_cost_model.defined())
-        << "ValueError: CostModel is not supplied in PreTuning. Evolutionary search "
-           "algorithm expects a cost model to filter out potentially less efficient kernels. If "
-           "you do not expect a cost model to help, please use "
+        << "ValueError: Latency CostModel is not supplied in PreTuning. NSGA-II search "
+           "algorithm expects a latency cost model to filter out potentially less efficient kernels. If "
+           "you do not expect a latency cost model to help, please use "
+           "`tvm.meta_schedule.cost_model.RandomModel`";
+    CHECK(bandwidth_cost_model.defined())
+        << "ValueError: Bandwidth CostModel is not supplied in PreTuning. NSGA-II search "
+           "algorithm expects a bandwidth cost model to filter out potentially less efficient kernels. If "
+           "you do not expect a bandwidth cost model to help, please use "
            "`tvm.meta_schedule.cost_model.RandomModel`";
     CHECK(this->state_ == nullptr)
         << "ValueError: `PreTuning` is already invoked without corresponding `PostTuning`.";
     this->state_ = std::make_unique<State>(this, max_trials, num_trials_per_iter, design_spaces,
-                                           database.value(), latency_cost_model.value());
+                                           database.value(), latency_cost_model.value(), bandwidth_cost_model.value());
   }
 
   void PostTuning() final {
@@ -459,7 +471,7 @@ class EvolutionarySearchNode : public SearchStrategyNode {
   }
 
   SearchStrategy Clone() const final {
-    ObjectPtr<EvolutionarySearchNode> n = ffi::make_object<EvolutionarySearchNode>();
+    ObjectPtr<NSGAIISearchNode> n = ffi::make_object<NSGAIISearchNode>();
     n->population_size = this->population_size;
     n->num_empty_iters_before_early_stop = this->num_empty_iters_before_early_stop;
     n->init_measured_ratio = this->init_measured_ratio;
@@ -476,8 +488,8 @@ class EvolutionarySearchNode : public SearchStrategyNode {
   }
 };
 
-std::vector<Schedule> EvolutionarySearchNode::State::PickBestFromDatabase(int num) {
-  auto _ = Profiler::TimedScope("EvoSearch/PickBestFromDatabase");
+std::vector<Schedule> NSGAIISearchNode::State::PickBestFromDatabase(int num) {
+  auto _ = Profiler::TimedScope("NSGAIISearch/PickBestFromDatabase");
   std::vector<tir::Trace> measured_traces;
   measured_traces.reserve(num);
   ffi::Array<TuningRecord> top_records = this->database_->GetTopK(this->token_, num);
@@ -506,8 +518,8 @@ std::vector<Schedule> EvolutionarySearchNode::State::PickBestFromDatabase(int nu
   return results;
 }
 
-std::vector<Schedule> EvolutionarySearchNode::State::SampleInitPopulation(int num) {
-  auto _ = Profiler::TimedScope("EvoSearch/SampleInitPopulation");
+std::vector<Schedule> NSGAIISearchNode::State::SampleInitPopulation(int num) {
+  auto _ = Profiler::TimedScope("NSGAIISearch/SampleInitPopulation");
   ThreadedTraceApply pp(self->postprocs_);
   std::vector<Schedule> out_schs;
   int fail_count = 0;
@@ -541,126 +553,315 @@ std::vector<Schedule> EvolutionarySearchNode::State::SampleInitPopulation(int nu
   return out_schs;
 }
 
-std::vector<Schedule> EvolutionarySearchNode::State::EvolveWithCostModel(
-    std::vector<Schedule> population, int num) {
+/*!
+ * \brief Binary tournament selection for NSGA-II.
+ * Selects the winner between two randomly chosen individuals based on rank and crowding distance.
+ * \param ranks Vector of Pareto ranks.
+ * \param crowding_distances Vector of crowding distances.
+ * \param rand_state Random state for selection.
+ * \param population_size Size of the population.
+ * \return Index of the selected individual.
+ */
+static int BinaryTournamentSelection(const std::vector<int>& ranks,
+                                    const std::vector<double>& crowding_distances,
+                                    TRandState* rand_state, int population_size) {
+  // Randomly select two individuals
+  int idx1 = tir::SampleInt(rand_state, 0, population_size);
+  int idx2 = tir::SampleInt(rand_state, 0, population_size);
+  
+  // Compare by rank (lower is better)
+  if (ranks[idx1] < ranks[idx2]) {
+    return idx1;
+  } else if (ranks[idx1] > ranks[idx2]) {
+    return idx2;
+  }
+  
+  // If same rank, compare by crowding distance (higher is better)
+  if (crowding_distances[idx1] > crowding_distances[idx2]) {
+    return idx1;
+  } else if (crowding_distances[idx1] < crowding_distances[idx2]) {
+    return idx2;
+  }
+  
+  // If same rank and crowding distance, randomly choose
+  return (tir::SampleInt(rand_state, 0, 2) == 0) ? idx1 : idx2;
+}
+
+/*!
+ * \brief Select next generation using NSGA-II selection mechanism.
+ * Fills the next generation by rank, using crowding distance as tie-breaker.
+ * \param combined_population Combined parent+offspring population.
+ * \param combined_latency_scores Latency scores for combined population.
+ * \param combined_bandwidth_scores Bandwidth scores for combined population.
+ * \param target_size Target size of next generation.
+ * \return Selected population of size target_size.
+ */
+static std::vector<Schedule> NSGAIISelectNextGeneration(
+    const std::vector<Schedule>& combined_population,
+    const std::vector<double>& combined_latency_scores,
+    const std::vector<double>& combined_bandwidth_scores,
+    int target_size) {
+  int n = combined_population.size();
+  if (n == 0) {
+    return {};
+  }
+  
+  // Cost model scores are "the larger the better", but Pareto dominance assumes minimization.
+  // Negate scores to convert to minimization problem (lower is better).
+  std::vector<double> negated_latency_scores(n);
+  std::vector<double> negated_bandwidth_scores(n);
+  for (int i = 0; i < n; ++i) {
+    negated_latency_scores[i] = -combined_latency_scores[i];
+    negated_bandwidth_scores[i] = -combined_bandwidth_scores[i];
+  }
+  
+  // Perform non-dominated sorting
+  std::vector<int> ranks = NonDominatedSort(negated_latency_scores, negated_bandwidth_scores);
+  
+  // Calculate crowding distances for each rank
+  std::unordered_map<int, std::vector<int>> indices_by_rank;
+  for (int i = 0; i < n; ++i) {
+    indices_by_rank[ranks[i]].push_back(i);
+  }
+  
+  std::vector<double> crowding_distances(n, 0.0);
+  for (auto& [rank, rank_indices] : indices_by_rank) {
+    if (rank_indices.size() <= 2) {
+      // Boundary points get infinite distance
+      for (int idx : rank_indices) {
+        crowding_distances[idx] = std::numeric_limits<double>::max();
+      }
+    } else {
+      // Extract objective values for this rank (use negated scores for minimization)
+      std::vector<double> rank_latency;
+      std::vector<double> rank_bandwidth;
+      std::vector<int> rank_to_global;
+      for (int idx : rank_indices) {
+        rank_latency.push_back(negated_latency_scores[idx]);
+        rank_bandwidth.push_back(negated_bandwidth_scores[idx]);
+        rank_to_global.push_back(idx);
+      }
+      
+      // Calculate crowding distance for this rank
+      std::vector<double> rank_distances = CalculateCrowdingDistance(rank_latency, rank_bandwidth);
+      for (size_t i = 0; i < rank_indices.size(); ++i) {
+        crowding_distances[rank_to_global[i]] = rank_distances[i];
+      }
+    }
+  }
+  
+  // Create ranked items for sorting
+  struct RankedItem {
+    Schedule sch;
+    int rank;
+    double crowding_distance;
+    int index;
+    
+    bool operator<(const RankedItem& other) const {
+      if (rank != other.rank) {
+        return rank < other.rank;  // Lower rank is better
+      }
+      if (crowding_distance != other.crowding_distance) {
+        return crowding_distance > other.crowding_distance;  // Higher distance is better
+      }
+      return index < other.index;  // Stable ordering
+    }
+  };
+  
+  std::vector<RankedItem> ranked_items;
+  ranked_items.reserve(n);
+  for (int i = 0; i < n; ++i) {
+    ranked_items.push_back({combined_population[i], ranks[i], crowding_distances[i], i});
+  }
+  
+  // Sort by rank (ascending), then by crowding distance (descending)
+  std::sort(ranked_items.begin(), ranked_items.end());
+  
+  // Select top target_size candidates
+  std::vector<Schedule> next_generation;
+  next_generation.reserve(target_size);
+  for (int i = 0; i < n && static_cast<int>(next_generation.size()) < target_size; ++i) {
+    next_generation.push_back(ranked_items[i].sch);
+  }
+  
+  return next_generation;
+}
+
+std::vector<Schedule> NSGAIISearchNode::State::EvolveWithCostModel(std::vector<Schedule> population,
+                                                                   int num) {
   IRModuleSet exists(database_->GetModuleEquality());
   {
-    auto _ = Profiler::TimedScope("EvoSearch/Evolve/Misc/CopyMeasuredWorkloads");
+    auto _ = Profiler::TimedScope("NSGAIISearch/Evolve/Misc/CopyMeasuredWorkloads");
     ICHECK_GT(num, 0);
-    // The heap to record best schedule, we do not consider schedules that are already measured
     exists = this->measured_workloads_;
   }
-  SizedHeap heap(num);
-  for (int iter = 0;; ++iter) {
-    // Predict normalized score with the cost model,
-    std::vector<double> scores =
-        PredictNormalizedScore(population, ffi::GetRef<TuneContext>(self->ctx_), this->cost_model_);
-
+  
+  int pop_size = population.size();
+  ICHECK_GT(pop_size, 0) << "Population size must be greater than 0";
+  
+  // Standard NSGA-II: For each generation
+  for (int iter = 0; iter <= self->genetic_num_iters; ++iter) {
     {
-      auto _ = Profiler::TimedScope("EvoSearch/Evolve/Misc");
-      ICHECK_EQ(scores.size(), population.size());
-      for (int i = 0, n = population.size(); i < n; ++i) {
+      auto _ = Profiler::TimedScope("NSGAIISearch/Evolve/Evaluation");
+      // Evaluate current population
+      std::vector<double> latency_scores =
+          PredictNormalizedScore(population, ffi::GetRef<TuneContext>(self->ctx_), this->latency_cost_model_);
+      std::vector<double> bandwidth_scores = 
+          PredictNormalizedScore(population, ffi::GetRef<TuneContext>(self->ctx_), this->bandwidth_cost_model_);
+      
+      ICHECK_EQ(latency_scores.size(), static_cast<size_t>(pop_size));
+      ICHECK_EQ(bandwidth_scores.size(), static_cast<size_t>(pop_size));
+      
+      // Track evaluated candidates
+      for (int i = 0; i < pop_size; ++i) {
         Schedule sch = population.at(i);
         IRModule mod = sch->mod();
         size_t shash = ModuleHash(mod);
-        double score = scores.at(i);
         if (!exists.Has(mod, shash)) {
           exists.Add(mod, shash);
-          heap.Push(sch, score);
         }
       }
-      // Discontinue once it reaches end of search
+      
+      // If last iteration, select final candidates and return
       if (iter == self->genetic_num_iters) {
-        break;
+        return NSGAIISelectNextGeneration(population, latency_scores, bandwidth_scores, num);
       }
-      // Set threaded samplers, with probability from predicated normalized throughput
-      for (PerThreadData& data : this->per_thread_data_) {
-        data.Set(scores, self->genetic_mutate_prob, self->mutator_probs_);
+      
+      // Cost model scores are "the larger the better", but Pareto dominance assumes minimization.
+      // Negate scores to convert to minimization problem (lower is better).
+      std::vector<double> negated_latency_scores(pop_size);
+      std::vector<double> negated_bandwidth_scores(pop_size);
+      for (int i = 0; i < pop_size; ++i) {
+        negated_latency_scores[i] = -latency_scores[i];
+        negated_bandwidth_scores[i] = -bandwidth_scores[i];
       }
-    }
-    {
-      auto _ = Profiler::TimedScope("EvoSearch/Evolve/Mutation");
-      ThreadedTraceApply pp(self->postprocs_);
-      ConcurrentBitmask cbmask(self->population_size);
-      std::vector<Schedule> next_population(self->population_size, Schedule{nullptr});
-      // The worker function
-      auto f_find_candidate = [&cbmask, &population, &next_population, &pp, this](int thread_id,
-                                                                                  int trace_id) {
-        // Prepare samplers
-        PerThreadData& data = this->per_thread_data_.at(thread_id);
-        TRandState* rand_state = &data.rand_state;
-        const IRModule& mod = data.mod;
-        std::function<int()>& trace_sampler = data.trace_sampler;
-        std::function<ffi::Optional<Mutator>()>& mutator_sampler = data.mutator_sampler;
-        Schedule& result = next_population.at(trace_id);
-        int sampled_trace_id = -1;
-        // Loop until success
-        for (int fail_count = 0; fail_count <= self->genetic_max_fail_count; ++fail_count) {
-          sampled_trace_id = trace_sampler();
-          sampled_trace_id = sampled_trace_id % self->population_size;
-          tir::Trace trace = population.at(sampled_trace_id)->trace().value();
-          if (ffi::Optional<Mutator> opt_mutator = mutator_sampler()) {
-            // Decision: mutate
-            Mutator mutator = opt_mutator.value();
-            if (ffi::Optional<tir::Trace> new_trace = mutator->Apply(trace, rand_state)) {
-              if (ffi::Optional<Schedule> sch = pp.Apply(mod, new_trace.value(), rand_state)) {
-                // note that sch's trace is different from new_trace
-                // because it contains post-processing information
-                result = sch.value();
-                break;
-              }
-            }
-          } else if (cbmask.QueryAndMark(sampled_trace_id)) {
-            // Decision: do not mutate
-            break;
+      
+      // Perform non-dominated sorting and calculate crowding distance for tournament selection
+      std::vector<int> ranks = NonDominatedSort(negated_latency_scores, negated_bandwidth_scores);
+      
+      std::unordered_map<int, std::vector<int>> indices_by_rank;
+      for (int i = 0; i < pop_size; ++i) {
+        indices_by_rank[ranks[i]].push_back(i);
+      }
+      
+      std::vector<double> crowding_distances(pop_size, 0.0);
+      for (auto& [rank, rank_indices] : indices_by_rank) {
+        if (rank_indices.size() <= 2) {
+          for (int idx : rank_indices) {
+            crowding_distances[idx] = std::numeric_limits<double>::max();
+          }
+        } else {
+          std::vector<double> rank_latency;
+          std::vector<double> rank_bandwidth;
+          std::vector<int> rank_to_global;
+          for (int idx : rank_indices) {
+            rank_latency.push_back(negated_latency_scores[idx]);
+            rank_bandwidth.push_back(negated_bandwidth_scores[idx]);
+            rank_to_global.push_back(idx);
+          }
+          std::vector<double> rank_distances = CalculateCrowdingDistance(rank_latency, rank_bandwidth);
+          for (size_t i = 0; i < rank_indices.size(); ++i) {
+            crowding_distances[rank_to_global[i]] = rank_distances[i];
           }
         }
-        // if retry count exceeds the limit, reuse an old sample
-        if (!result.defined()) {
-          result = population.at(sampled_trace_id);
+      }
+      
+      // Initialize mutator samplers for all threads (needed for mutation)
+      for (PerThreadData& data : this->per_thread_data_) {
+        if (!data.mutator_sampler) {
+          // Initialize mutator sampler
+          data.Set(self->genetic_mutate_prob, self->mutator_probs_);
         }
-      };
-      support::parallel_for_dynamic(0, self->population_size, self->ctx_->num_threads,
-                                    f_find_candidate);
-
-      population.swap(next_population);
-      TVM_PY_LOG(INFO, self->ctx_->logger) << "Evolve iter #" << iter << " done. Summary:\n"
-                                           << pp.SummarizeFailures();
-    }
-  }
-  // Return the best states from the heap, sorting from higher score to lower ones
-  {
-    auto _ = Profiler::TimedScope("EvoSearch/Evolve/Misc");
-    std::sort(heap.heap.begin(), heap.heap.end());
-    std::vector<Schedule> results;
-    results.reserve(num);
-    for (const SizedHeap::Item& item : heap.heap) {
-      results.push_back(item.sch);
-    }
-
-    constexpr int kNumScoresPerLine = 16;
-    std::ostringstream os;
-    int n = heap.heap.size();
-    for (int st = 0; st < n; st += kNumScoresPerLine) {
-      os << std::endl;
-      int ed = std::min(st + kNumScoresPerLine, n);
-      os << "[" << (st + 1) << " : " << ed << "]:\t";
-      for (int i = st; i < ed; ++i) {
-        if (i != st) {
-          os << "  ";
-        }
-        os << std::fixed << std::setprecision(4) << heap.heap.at(i).score;
+      }
+      
+      // Create offspring population using binary tournament selection
+      {
+        auto _ = Profiler::TimedScope("NSGAIISearch/Evolve/CreateOffspring");
+        ThreadedTraceApply pp(self->postprocs_);
+        std::vector<Schedule> offspring(pop_size, Schedule{nullptr});
+        
+        auto f_create_offspring = [&population, &offspring, &ranks, &crowding_distances, &pp, pop_size, this](
+            int thread_id, int offspring_id) {
+          PerThreadData& data = this->per_thread_data_.at(thread_id);
+          TRandState* rand_state = &data.rand_state;
+          const IRModule& mod = data.mod;
+          Schedule& result = offspring.at(offspring_id);
+          
+          // Binary tournament selection to choose parent
+          int parent_idx = BinaryTournamentSelection(ranks, crowding_distances, rand_state, pop_size);
+          tir::Trace parent_trace = population.at(parent_idx)->trace().value();
+          
+          // Apply mutation with probability (sample float by using integer sampling)
+          double rand_val = static_cast<double>(tir::SampleInt(rand_state, 0, 10000)) / 10000.0;
+          if (rand_val < self->genetic_mutate_prob) {
+            // Select mutator
+            std::function<ffi::Optional<Mutator>()>& mutator_sampler = data.mutator_sampler;
+            if (mutator_sampler) {
+              if (ffi::Optional<Mutator> opt_mutator = mutator_sampler()) {
+                Mutator mutator = opt_mutator.value();
+                if (ffi::Optional<tir::Trace> new_trace = mutator->Apply(parent_trace, rand_state)) {
+                  if (ffi::Optional<Schedule> sch = pp.Apply(mod, new_trace.value(), rand_state)) {
+                    result = sch.value();
+                    return;
+                  }
+                }
+              }
+            }
+          }
+          
+          // If mutation failed or not applied, copy parent (with post-processing)
+          if (ffi::Optional<Schedule> sch = pp.Apply(mod, parent_trace, rand_state)) {
+            result = sch.value();
+          } else {
+            // Fallback: use parent directly
+            result = population.at(parent_idx);
+          }
+        };
+        
+        support::parallel_for_dynamic(0, pop_size, self->ctx_->num_threads, f_create_offspring);
+        
+        // Evaluate offspring
+        std::vector<double> offspring_latency_scores =
+            PredictNormalizedScore(offspring, ffi::GetRef<TuneContext>(self->ctx_), this->latency_cost_model_);
+        std::vector<double> offspring_bandwidth_scores = 
+            PredictNormalizedScore(offspring, ffi::GetRef<TuneContext>(self->ctx_), this->bandwidth_cost_model_);
+        
+        // NSGA-II Step: Combine parent and offspring populations (elitism)
+        std::vector<Schedule> combined_population;
+        std::vector<double> combined_latency_scores;
+        std::vector<double> combined_bandwidth_scores;
+        
+        combined_population.reserve(pop_size * 2);
+        combined_latency_scores.reserve(pop_size * 2);
+        combined_bandwidth_scores.reserve(pop_size * 2);
+        
+        combined_population.insert(combined_population.end(), population.begin(), population.end());
+        combined_population.insert(combined_population.end(), offspring.begin(), offspring.end());
+        combined_latency_scores.insert(combined_latency_scores.end(), latency_scores.begin(), latency_scores.end());
+        combined_latency_scores.insert(combined_latency_scores.end(), offspring_latency_scores.begin(), offspring_latency_scores.end());
+        combined_bandwidth_scores.insert(combined_bandwidth_scores.end(), bandwidth_scores.begin(), bandwidth_scores.end());
+        combined_bandwidth_scores.insert(combined_bandwidth_scores.end(), offspring_bandwidth_scores.begin(), offspring_bandwidth_scores.end());
+        
+        // NSGA-II Step: Select next generation from combined population
+        population = NSGAIISelectNextGeneration(combined_population, combined_latency_scores, 
+                                                combined_bandwidth_scores, pop_size);
+        
+        TVM_PY_LOG(INFO, self->ctx_->logger) << "NSGA-II generation #" << iter 
+                                             << " completed. Population size: " << population.size();
       }
     }
-    TVM_PY_LOG(INFO, self->ctx_->logger)
-        << "Scores of the best " << n << " candidates:" << os.str();
-    return results;
   }
+  
+  // Should not reach here, but return final population if we do
+  return NSGAIISelectNextGeneration(population, 
+      PredictNormalizedScore(population, ffi::GetRef<TuneContext>(self->ctx_), this->latency_cost_model_),
+      PredictNormalizedScore(population, ffi::GetRef<TuneContext>(self->ctx_), this->bandwidth_cost_model_),
+      num);
 }
 
-std::vector<Schedule> EvolutionarySearchNode::State::PickWithEpsGreedy(
+std::vector<Schedule> NSGAIISearchNode::State::PickWithEpsGreedy(
     const std::vector<Schedule>& unmeasured, const std::vector<Schedule>& bests, int num) {
-  auto _ = Profiler::TimedScope("EvoSearch/PickWithEpsGreedy");
+  auto _ = Profiler::TimedScope("NSGAIISearch/PickWithEpsGreedy");
   int num_rands = num * self->eps_greedy;
   int num_bests = num - num_rands;
   std::vector<int> rands =
@@ -702,8 +903,7 @@ std::vector<Schedule> EvolutionarySearchNode::State::PickWithEpsGreedy(
   return results;
 }
 
-ffi::Optional<ffi::Array<MeasureCandidate>>
-EvolutionarySearchNode::State::GenerateMeasureCandidates() {
+ffi::Optional<ffi::Array<MeasureCandidate>> NSGAIISearchNode::State::GenerateMeasureCandidates() {
   if (st >= max_trials) {
     return std::nullopt;
   }
@@ -724,7 +924,7 @@ EvolutionarySearchNode::State::GenerateMeasureCandidates() {
   std::vector<Schedule> unmeasured = SampleInitPopulation(pop - measured.size());
   if (static_cast<int>(unmeasured.size()) < self->init_min_unmeasured) {
     TVM_PY_LOG(WARNING, self->ctx_->logger)
-        << "Cannot sample enough initial population, evolutionary search failed.";
+        << "Cannot sample enough initial population, NSGA-II search failed.";
     return std::nullopt;
   }
   TVM_PY_LOG(INFO, self->ctx_->logger) << "Sampled " << unmeasured.size() << " candidate(s)";
@@ -732,7 +932,7 @@ EvolutionarySearchNode::State::GenerateMeasureCandidates() {
   inits.insert(inits.end(), unmeasured.begin(), unmeasured.end());
   std::vector<Schedule> bests = EvolveWithCostModel(inits, sample_num);
   TVM_PY_LOG(INFO, self->ctx_->logger)
-      << "Got " << bests.size() << " candidate(s) with evolutionary search";
+      << "Got " << bests.size() << " candidate(s) with NSGA-II search";
   std::vector<Schedule> picks = PickWithEpsGreedy(unmeasured, bests, sample_num);
   TVM_PY_LOG(INFO, self->ctx_->logger)
       << "Sending " << picks.size() << " candidates(s) for measurement";
@@ -745,29 +945,29 @@ EvolutionarySearchNode::State::GenerateMeasureCandidates() {
   return AssembleCandidates(picks);
 }
 
-void EvolutionarySearchNode::State::NotifyRunnerResults(
+void NSGAIISearchNode::State::NotifyRunnerResults(
     const ffi::Array<MeasureCandidate>& measure_candidates,
     const ffi::Array<RunnerResult>& results) {
   st += results.size();
   ed += results.size();
 }
 
-size_t EvolutionarySearchNode::State::ModuleHash(const IRModule& mod) const {
+size_t NSGAIISearchNode::State::ModuleHash(const IRModule& mod) const {
   return database_->GetModuleEquality().Hash(mod);
 }
 
-SearchStrategy SearchStrategy::EvolutionarySearch(int population_size,         //
-                                                  double init_measured_ratio,  //
-                                                  int init_min_unmeasured,     //
-                                                  int max_fail_count,          //
-                                                  int genetic_num_iters,       //
-                                                  double genetic_mutate_prob,  //
-                                                  int genetic_max_fail_count,  //
-                                                  double eps_greedy) {
+SearchStrategy SearchStrategy::NSGAIISearch(int population_size,         //
+                                            double init_measured_ratio,  //
+                                            int init_min_unmeasured,     //
+                                            int max_fail_count,          //
+                                            int genetic_num_iters,       //
+                                            double genetic_mutate_prob,  //
+                                            int genetic_max_fail_count,  //
+                                            double eps_greedy) {
   TVM_META_SCHEDULE_CHECK_PROB_RANGE(init_measured_ratio, "Initial measured ratio");
   TVM_META_SCHEDULE_CHECK_PROB_RANGE(genetic_mutate_prob, "Mutation probability");
   TVM_META_SCHEDULE_CHECK_PROB_RANGE(eps_greedy, "Greedy pick probability");
-  ObjectPtr<EvolutionarySearchNode> n = ffi::make_object<EvolutionarySearchNode>();
+  ObjectPtr<NSGAIISearchNode> n = ffi::make_object<NSGAIISearchNode>();
   n->population_size = population_size;
   n->num_empty_iters_before_early_stop = 5;
   n->init_measured_ratio = init_measured_ratio;
@@ -780,20 +980,18 @@ SearchStrategy SearchStrategy::EvolutionarySearch(int population_size,         /
   return SearchStrategy(n);
 }
 
-class EvolutionarySearch : public SearchStrategy {
+class NSGAIISearch : public SearchStrategy {
  public:
-  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NOTNULLABLE(EvolutionarySearch, SearchStrategy,
-                                                EvolutionarySearchNode);
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NOTNULLABLE(NSGAIISearch, SearchStrategy, NSGAIISearchNode);
 };
 
-ffi::Array<Schedule> EvolutionarySearchSampleInitPopulation(EvolutionarySearch self, int num) {
+ffi::Array<Schedule> NSGAIISearchSampleInitPopulation(NSGAIISearch self, int num) {
   std::vector<Schedule> results = self->state_->SampleInitPopulation(num);
   return ffi::Array<Schedule>(results.begin(), results.end());
 }
 
-ffi::Array<Schedule> EvolutionarySearchEvolveWithCostModel(EvolutionarySearch self,
-                                                           ffi::Array<Schedule> population,
-                                                           int num) {
+ffi::Array<Schedule> NSGAIISearchEvolveWithCostModel(NSGAIISearch self,
+                                                     ffi::Array<Schedule> population, int num) {
   ffi::Array<Schedule> result;
   std::vector<Schedule> population_vec =
       std::vector<Schedule>(population.begin(), population.end());
@@ -809,16 +1007,16 @@ ffi::Array<Schedule> EvolutionarySearchEvolveWithCostModel(EvolutionarySearch se
   return result;
 }
 
-TVM_FFI_STATIC_INIT_BLOCK() { EvolutionarySearchNode::RegisterReflection(); }
+TVM_FFI_STATIC_INIT_BLOCK() { NSGAIISearchNode::RegisterReflection(); }
 
 TVM_FFI_STATIC_INIT_BLOCK() {
   namespace refl = tvm::ffi::reflection;
   refl::GlobalDef()
-      .def("meta_schedule.SearchStrategyEvolutionarySearch", SearchStrategy::EvolutionarySearch)
-      .def("meta_schedule.SearchStrategyEvolutionarySearchSampleInitPopulation",
-           EvolutionarySearchSampleInitPopulation)
-      .def("meta_schedule.SearchStrategyEvolutionarySearchEvolveWithCostModel",
-           EvolutionarySearchEvolveWithCostModel);
+      .def("meta_schedule.SearchStrategyNSGAIISearch", SearchStrategy::NSGAIISearch)
+      .def("meta_schedule.SearchStrategyNSGAIISearchSampleInitPopulation",
+           NSGAIISearchSampleInitPopulation)
+      .def("meta_schedule.SearchStrategyNSGAIISearchEvolveWithCostModel",
+           NSGAIISearchEvolveWithCostModel);
 }
 
 }  // namespace meta_schedule

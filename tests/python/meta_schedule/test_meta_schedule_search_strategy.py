@@ -112,6 +112,7 @@ def test_meta_schedule_replay_func(
             runner_results.append(
                 ms.runner.RunnerResult(
                     run_secs=[0.11, 0.41, 0.54],
+                    bw_mbps=None,
                     error_msg=None,
                 )
             )
@@ -162,7 +163,8 @@ def test_meta_schedule_evolutionary_search():  # pylint: disable = invalid-name
         num_trials_per_iter=num_trials_per_iter,
         design_spaces=context.space_generator.generate_design_space(context.mod),
         database=ms.database.MemoryDatabase(),
-        cost_model=ms.cost_model.RandomModel(),
+        latency_cost_model=ms.cost_model.RandomModel(),
+        bandwidth_cost_model=None,
     )
     num_trials_each_iter: List[int] = []
     candidates = strategy.generate_measure_candidates()
@@ -178,6 +180,7 @@ def test_meta_schedule_evolutionary_search():  # pylint: disable = invalid-name
             runner_results.append(
                 ms.runner.RunnerResult(
                     run_secs=[0.11, 0.41, 0.54],
+                    bw_mbps=None,
                     error_msg=None,
                 )
             )
@@ -227,7 +230,8 @@ def test_meta_schedule_evolutionary_search_early_stop():  # pylint: disable = in
         num_trials_per_iter=num_trials_per_iter,
         design_spaces=context.space_generator.generate_design_space(context.mod),
         database=ms.database.MemoryDatabase(),
-        cost_model=ms.cost_model.RandomModel(),
+        latency_cost_model=ms.cost_model.RandomModel(),
+        bandwidth_cost_model=None,
     )
     num_trials_each_iter: List[int] = []
     candidates = strategy.generate_measure_candidates()
@@ -243,6 +247,7 @@ def test_meta_schedule_evolutionary_search_early_stop():  # pylint: disable = in
             runner_results.append(
                 ms.runner.RunnerResult(
                     run_secs=[0.11, 0.41, 0.54],
+                    bw_mbps=None,
                     error_msg=None,
                 ),
             )
@@ -300,10 +305,79 @@ def test_meta_schedule_evolutionary_search_fail_init_population():  # pylint: di
         num_trials_per_iter=num_trials_per_iter,
         design_spaces=context.space_generator.generate_design_space(context.mod),
         database=ms.database.MemoryDatabase(),
-        cost_model=ms.cost_model.RandomModel(),
+        latency_cost_model=ms.cost_model.RandomModel(),
+        bandwidth_cost_model=None,
     )
     candidates = strategy.generate_measure_candidates()
     assert candidates is None
+
+
+def test_meta_schedule_nsgaii_search():  # pylint: disable = invalid-name
+    def _schedule_matmul_small(sch: Schedule):
+        block = sch.get_block("matmul")
+        _, j, k = sch.get_loops(block=block)
+        _, _ = sch.split(j, sch.sample_perfect_tile(j, n=2))
+        _, _ = sch.split(k, sch.sample_perfect_tile(k, n=2))
+
+    num_trials_per_iter = 10
+    max_trials_per_task = 2000
+    (correct_sch,) = ms.space_generator.ScheduleFn(sch_fn=_schedule_matmul).generate_design_space(Matmul)
+
+    context = ms.TuneContext(
+        mod=Matmul,
+        space_generator=ms.space_generator.ScheduleFn(
+            sch_fn=_schedule_matmul_small,
+            sch_rules=[],
+            postprocs=[],
+            mutator_probs={
+                DummyMutator(): 1.0,
+            },
+        ),
+        search_strategy=ms.search_strategy.NSGAIISearch(
+            population_size=5,
+            init_measured_ratio=0.1,
+            init_min_unmeasured=50,
+            max_fail_count=10,
+            genetic_num_iters=3,
+            genetic_mutate_prob=0.5,
+            genetic_max_fail_count=10,
+            eps_greedy=0.9,
+        ),
+        target=tvm.target.Target("llvm"),
+        num_threads=1,
+    )
+    strategy = context.search_strategy
+    strategy.pre_tuning(
+        max_trials=max_trials_per_task,
+        num_trials_per_iter=num_trials_per_iter,
+        design_spaces=context.space_generator.generate_design_space(context.mod),
+        database=ms.database.JSONParetoDatabase(work_dir="/tmp/test_nsgaii_search"),  # TODO(widiba03304)
+        latency_cost_model=ms.cost_model.RandomModel(),
+        bandwidth_cost_model=ms.cost_model.RandomModel(),
+    )
+    num_trials_each_iter: List[int] = []
+    candidates = strategy.generate_measure_candidates()
+    while candidates is not None:
+        num_trials_each_iter.append(len(candidates))
+        runner_results: List[ms.runner.RunnerResult] = []
+        for candidate in candidates:
+            _is_trace_equal(
+                candidate.sch,
+                correct_sch,
+                remove_decisions=(isinstance(strategy, ms.search_strategy.ReplayTrace)),
+            )
+            runner_results.append(
+                ms.runner.RunnerResult(
+                    run_secs=[],
+                    bw_mbps=[],
+                    error_msg=None,
+                )
+            )
+        strategy.notify_runner_results(candidates, runner_results)
+        candidates = strategy.generate_measure_candidates()
+    strategy.post_tuning()
+    assert sum(num_trials_each_iter) == 25
+    assert num_trials_each_iter.count(0) < 5
 
 
 if __name__ == "__main__":
@@ -312,3 +386,4 @@ if __name__ == "__main__":
     test_meta_schedule_evolutionary_search()
     test_meta_schedule_evolutionary_search_early_stop()
     test_meta_schedule_evolutionary_search_fail_init_population()
+    test_meta_schedule_nsgaii_search()

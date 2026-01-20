@@ -19,6 +19,7 @@
 #include <tvm/ffi/reflection/registry.h>
 
 #include "../utils.h"
+#include "tvm/ffi/object.h"
 
 namespace tvm {
 namespace meta_schedule {
@@ -151,18 +152,108 @@ void TaskCleanUp(TaskRecordNode* self, int task_id, const ffi::Array<RunnerResul
   self->runner_futures = std::nullopt;
 }
 
+void TaskSchedulerNode::SetReferencePoint(TuneContext ctx, Builder builder, Runner runner) {
+  // Create a TaskRecord and keep it alive (don't use temporary)
+  TaskRecord task_record = TaskRecord(ctx, 1.0);
+  TaskRecordNode* task = task_record.get();
+  IRModule mod = ctx->mod.value();
+
+  // Generate an unoptimized reference point (worst possible point for hypervolume calculation)
+  // Strategy: Start from the original module with NO schedule rules applied (empty trace),
+  // then apply only postprocessors to ensure validity. This gives us the most basic,
+  // unoptimized code with minimal bindings (e.g., GPU thread/block bindings) needed for validity.
+  // Using a fixed seed (0) ensures deterministic behavior.
+
+  // Create an empty trace - no schedule rules, no optimizations
+  tir::Trace empty_trace = tir::Trace();
+
+  // Apply only postprocessors with a fixed seed for deterministic behavior
+  ThreadedTraceApply pp(ctx->space_generator.value()->postprocs.value());
+  TRandState fixed_seed = 0;  // Fixed seed for determinism
+  ffi::Optional<tir::Schedule> sch_pp = pp.Apply(mod, empty_trace, &fixed_seed);
+
+  if (!sch_pp.has_value()) {
+    TVM_PY_LOG(ERROR, ctx->logger)
+        << "Error in setting reference point: Cannot apply postprocessors "
+        << "to create a valid unoptimized implementation\n"
+        << pp.SummarizeFailures();
+    return;
+  }
+
+  // Send to builder
+  ffi::Array<BuilderInput> builder_inputs;
+  builder_inputs.push_back(BuilderInput(sch_pp.value()->mod(), ctx->target.value()));
+  ffi::Array<BuilderResult> builder_results = builder->Build(builder_inputs);
+
+  // Send to runner
+  ffi::Array<RunnerInput> runner_inputs;
+  for (const BuilderResult& builder_result : builder_results) {
+    if (builder_result->error_msg.has_value()) {
+      TVM_PY_LOG(ERROR, ctx->logger)
+          << "Error in setting reference point: " << builder_result->error_msg.value();
+      return;
+    }
+
+    runner_inputs.push_back(RunnerInput(builder_result->artifact_path.value(),
+                                        ctx->target.value()->kind->name,
+                                        ArgInfo::FromEntryFunc(mod, true)));
+  }
+
+  ffi::Array<RunnerFuture> futures = runner->Run(runner_inputs);
+
+  // Join runner futures and process results
+  ffi::Array<RunnerResult> results;
+  results.reserve(futures.size());
+  for (RunnerFuture future : futures) {
+    auto result = future->Result();
+    if (result->error_msg.has_value()) {
+      TVM_PY_LOG(ERROR, ctx->logger)
+          << "Error in setting reference point: " << result->error_msg.value();
+      return;
+    }
+    results.push_back(result);
+  }
+
+  // Process results to extract latency and bandwidth
+  // Create a dummy measure candidate for TaskCleanUp
+  ffi::Array<MeasureCandidate> measure_candidates;
+  measure_candidates.push_back(MeasureCandidate(sch_pp.value(), ArgInfo::FromEntryFunc(mod, true)));
+  task->measure_candidates = measure_candidates;
+  task->builder_results = builder_results;
+  task->runner_futures = futures;
+
+  // Process results to populate task->latency_ms and task->bandwidth_mbps
+  TaskCleanUp(task, 0, results);
+
+  if (task->latency_ms.empty() || task->bandwidth_mbps.empty()) {
+    TVM_PY_LOG(ERROR, ctx->logger) << "Error in setting reference point: No valid results obtained";
+    return;
+  }
+
+  double latency_ms = *std::max_element(task->latency_ms.begin(), task->latency_ms.end());
+  double bandwidth_mbps =
+      *std::max_element(task->bandwidth_mbps.begin(), task->bandwidth_mbps.end());
+  this->latency_reference_point = latency_ms;
+  this->bandwidth_reference_point = bandwidth_mbps;
+
+  TVM_PY_LOG(INFO, ctx->logger) << "Reference point set: latency=" << latency_ms
+                                << "ms, bandwidth=" << bandwidth_mbps << "MB/s";
+}
+
 void TaskSchedulerNode::Tune(ffi::Array<TuneContext> ctxs, ffi::Array<FloatImm> task_weights,
                              int max_trials_global, int max_trials_per_task,
                              int num_trials_per_iter, Builder builder, Runner runner,
                              ffi::Array<MeasureCallback> measure_callbacks,
                              ffi::Optional<Database> database,
-                             ffi::Optional<CostModel> cost_model) {
+                             ffi::Optional<CostModel> latency_cost_model,
+                             ffi::Optional<CostModel> bandwidth_cost_model) {
   CHECK_EQ(ctxs.size(), task_weights.size()) << "ValueError: `task_weights` must have the same "
                                                 "length as `ctxs`";
   int n_tasks = this->remaining_tasks_ = ctxs.size();
   this->measure_callbacks_ = measure_callbacks;
   this->database_ = database;
-  this->cost_model_ = cost_model;
+  this->latency_cost_model_ = latency_cost_model;
+  this->bandwidth_cost_model_ = bandwidth_cost_model;
   this->tasks_.clear();
   this->tasks_.reserve(n_tasks);
   for (int i = 0; i < n_tasks; ++i) {
@@ -184,7 +275,7 @@ void TaskSchedulerNode::Tune(ffi::Array<TuneContext> ctxs, ffi::Array<FloatImm> 
                                     << Concat(trace->AsPython(false), "\n");
     }
     ctx->search_strategy.value()->PreTuning(max_trials_per_task, num_trials_per_iter, design_spaces,
-                                            database, cost_model);
+                                            database, latency_cost_model, bandwidth_cost_model);
   }
 
   int num_trials_already = 0;
@@ -274,21 +365,138 @@ void TaskSchedulerNode::TerminateTask(int task_id) {
   this->PrintTuningStatistics();
 }
 
+/*!
+ * \brief Calculate hypervolume for 2D Pareto front.
+ * Hypervolume measures the area dominated by the Pareto front relative to a reference point.
+ * \param latency_values Vector of latency values (to minimize).
+ * \param bandwidth_values Vector of bandwidth values (to minimize).
+ * \param ref_latency Reference point for latency (should be worse than all points).
+ * \param ref_bandwidth Reference point for bandwidth (should be worse than all points).
+ * \return The hypervolume value.
+ */
+static double CalculateHypervolume2D(const std::vector<double>& latency_values,
+                                     const std::vector<double>& bandwidth_values,
+                                     double ref_latency, double ref_bandwidth) {
+  if (latency_values.empty() || bandwidth_values.empty()) {
+    LOG(INFO) << "[Hypervolume] Empty input: latency_size=" << latency_values.size()
+              << ", bandwidth_size=" << bandwidth_values.size();
+    return 0.0;
+  }
+  ICHECK_EQ(latency_values.size(), bandwidth_values.size());
+
+  int n = latency_values.size();
+  LOG(INFO) << "[Hypervolume] Input: n=" << n << ", ref_latency=" << ref_latency
+            << ", ref_bandwidth=" << ref_bandwidth;
+
+  // Find Pareto front (rank 1 solutions)
+  std::vector<int> ranks = NonDominatedSort(latency_values, bandwidth_values);
+  std::vector<std::pair<double, double>> pareto_front;
+  for (int i = 0; i < n; ++i) {
+    if (ranks[i] == 1) {
+      pareto_front.push_back({latency_values[i], bandwidth_values[i]});
+    }
+  }
+
+  LOG(INFO) << "[Hypervolume] Pareto front size: " << pareto_front.size() << " out of " << n;
+  if (pareto_front.empty()) {
+    LOG(INFO) << "[Hypervolume] Empty Pareto front, returning 0.0";
+    return 0.0;
+  }
+
+  // Sort Pareto front by latency (ascending), then by bandwidth (ascending) for ties
+  std::sort(pareto_front.begin(), pareto_front.end(),
+            [](const std::pair<double, double>& a, const std::pair<double, double>& b) {
+              if (a.first != b.first) {
+                return a.first < b.first;
+              }
+              return a.second < b.second;
+            });
+
+  LOG(INFO) << "[Hypervolume] Pareto front points (latency, bandwidth):";
+  for (size_t i = 0; i < pareto_front.size(); ++i) {
+    LOG(INFO) << "  [" << i << "] (" << pareto_front[i].first << ", " << pareto_front[i].second
+              << ")";
+  }
+
+  // Calculate hypervolume using the "sweep" algorithm for 2D minimization
+  // Hypervolume is the area of the region dominated by the Pareto front
+  // Algorithm: sweep from reference point, accumulating rectangle areas
+  double hypervolume = 0.0;
+  double prev_latency = ref_latency;
+  double worst_bandwidth = ref_bandwidth;  // Track worst bandwidth seen so far
+
+  LOG(INFO) << "[Hypervolume] Starting calculation: prev_latency=" << prev_latency
+            << ", worst_bandwidth=" << worst_bandwidth;
+
+  int points_processed = 0;
+  int points_skipped = 0;
+  for (const auto& point : pareto_front) {
+    double latency = point.first;
+    double bandwidth = point.second;
+
+    // Ensure point is within reference bounds
+    if (latency > ref_latency || bandwidth > ref_bandwidth) {
+      LOG(INFO) << "[Hypervolume] Skipping point (" << latency << ", " << bandwidth
+                << ") - outside reference bounds (ref: " << ref_latency << ", " << ref_bandwidth
+                << ")";
+      points_skipped++;
+      continue;
+    }
+
+    // Calculate rectangle: from (prev_latency, worst_bandwidth) to (latency, bandwidth)
+    // This represents the new area dominated by this point
+    double width = prev_latency - latency;
+    double height = worst_bandwidth - bandwidth;
+
+    LOG(INFO) << "[Hypervolume] Processing point (" << latency << ", " << bandwidth
+              << "): width=" << width << ", height=" << height;
+
+    if (width > 0 && height > 0) {
+      double area = width * height;
+      hypervolume += area;
+      LOG(INFO) << "[Hypervolume] Added area: " << area << ", total: " << hypervolume;
+      points_processed++;
+    } else {
+      LOG(INFO) << "[Hypervolume] Skipping point - invalid dimensions (width=" << width
+                << ", height=" << height << ")";
+    }
+
+    // Update for next iteration
+    prev_latency = latency;
+    worst_bandwidth = std::min(worst_bandwidth, bandwidth);
+  }
+
+  LOG(INFO) << "[Hypervolume] Final result: " << hypervolume << " (processed: " << points_processed
+            << ", skipped: " << points_skipped << ")";
+  return hypervolume;
+}
+
 void TaskSchedulerNode::PrintTuningStatistics() {
   std::ostringstream os;
   int n_tasks = this->tasks_.size();
   int total_trials = 0;
   double total_latency = 0.0;
+  double total_hypervolume = 0.0;
+
+  // Check if reference points are set
+  bool has_reference_point =
+      this->latency_reference_point.has_value() && this->bandwidth_reference_point.has_value();
+
   support::TablePrinter p;
-  p.Row() << "ID"
-          << "Name"
-          << "FLOP"
-          << "Weight"
-          << "Speed (GFLOPS)"
-          << "Latency (us)"
-          << "Weighted Latency (us)"
-          << "Trials"
-          << "Done";
+  auto header_row = p.Row();
+  header_row << "ID"
+             << "Name"
+             << "FLOP"
+             << "Weight"
+             << "Max Speed (GFLOPS)"
+             << "Min Latency (us)"
+             << "Weighted Latency (us)"
+             << "Min Bandwidth (MB/s)";
+  if (has_reference_point) {
+    header_row << "Hypervolume";
+  }
+  header_row << "Trials"
+             << "Done";
   p.Separator();
   for (int i = 0; i < n_tasks; ++i) {
     const TaskRecordNode* task = this->tasks_[i].get();
@@ -297,6 +505,7 @@ void TaskSchedulerNode::PrintTuningStatistics() {
     row << /*id=*/i << /*name=*/task->ctx->task_name.value()  //
         << /*flops=*/static_cast<int64_t>(task->flop)
         << /*weight=*/static_cast<int>(task->task_weight);
+
     double latency_ms = 1e9;
     if (!task->latency_ms.empty()) {
       latency_ms = *std::min_element(task->latency_ms.begin(), task->latency_ms.end());
@@ -311,6 +520,42 @@ void TaskSchedulerNode::PrintTuningStatistics() {
       total_latency += weighted_latency;
       total_trials += trials;
     }
+
+    double bandwidth_mbps = 1e9;
+    if (!task->bandwidth_mbps.empty()) {
+      bandwidth_mbps = *std::min_element(task->bandwidth_mbps.begin(), task->bandwidth_mbps.end());
+    }
+    if (bandwidth_mbps >= 1e9) {
+      row << /*bandwidth*/ "N/A";
+    } else {
+      row << bandwidth_mbps;
+    }
+
+    // Calculate hypervolume only if reference point is set
+    if (has_reference_point) {
+      double hypervolume = 0.0;
+      if (!task->latency_ms.empty() && !task->bandwidth_mbps.empty() &&
+          task->latency_ms.size() == task->bandwidth_mbps.size()) {
+        // Convert latency_ms to seconds for consistency
+        std::vector<double> latency_sec(task->latency_ms.size());
+        for (size_t j = 0; j < task->latency_ms.size(); ++j) {
+          latency_sec[j] = task->latency_ms[j] / 1000.0;  // Convert ms to seconds
+        }
+
+        // Use the reference point set by SetReferencePoint
+        // Reference point is stored in milliseconds, convert to seconds
+        double ref_latency_sec = this->latency_reference_point.value() / 1000.0;
+        double ref_bandwidth_mbps = this->bandwidth_reference_point.value();
+
+        // Calculate hypervolume
+        hypervolume = CalculateHypervolume2D(latency_sec, task->bandwidth_mbps, ref_latency_sec,
+                                             ref_bandwidth_mbps);
+        total_hypervolume += hypervolume;
+      }
+
+      row << hypervolume;
+    }
+
     row << trials;
     if (task->is_terminated) {
       row << "Y";
@@ -320,9 +565,12 @@ void TaskSchedulerNode::PrintTuningStatistics() {
   }
   p.Separator();
 
-  os << "\nTotal trials: " << total_trials         //
-     << "\nTotal latency (us): " << total_latency  //
-     << "\n";
+  os << "\nTotal trials: " << total_trials  //
+     << "\nTotal latency (us): " << total_latency;
+  if (has_reference_point) {
+    os << "\nTotal hypervolume: " << total_hypervolume;
+  }
+  os << "\n";
 
   if (using_ipython()) {
     print_interactive_table(p.AsStr());
@@ -358,19 +606,28 @@ ffi::Array<RunnerResult> PyTaskSchedulerNode::JoinRunningTask(int task_id) {
   }
 }
 
+void PyTaskSchedulerNode::SetReferencePoint(TuneContext task, Builder builder, Runner runner) {
+  if (f_set_reference_point == nullptr) {
+    TaskSchedulerNode::SetReferencePoint(task, builder, runner);
+  } else {
+    f_set_reference_point(task, builder, runner);
+  }
+}
+
 void PyTaskSchedulerNode::Tune(ffi::Array<TuneContext> tasks, ffi::Array<FloatImm> task_weights,
                                int max_trials_global, int max_trials_per_task,
                                int num_trials_per_iter, Builder builder, Runner runner,
                                ffi::Array<MeasureCallback> measure_callbacks,
                                ffi::Optional<Database> database,
-                               ffi::Optional<CostModel> cost_model) {
+                               ffi::Optional<CostModel> latency_cost_model,
+                               ffi::Optional<CostModel> bandwidth_cost_model) {
   if (f_tune == nullptr) {
     TaskSchedulerNode::Tune(tasks, task_weights, max_trials_global, max_trials_per_task,
                             num_trials_per_iter, builder, runner, measure_callbacks, database,
-                            cost_model);
+                            latency_cost_model, bandwidth_cost_model);
   } else {
     f_tune(tasks, task_weights, max_trials_global, max_trials_per_task, num_trials_per_iter,
-           builder, runner, measure_callbacks, database, cost_model);
+           builder, runner, measure_callbacks, database, latency_cost_model, bandwidth_cost_model);
   }
 }
 
@@ -378,6 +635,8 @@ TVM_FFI_STATIC_INIT_BLOCK() {
   namespace refl = tvm::ffi::reflection;
   refl::GlobalDef()
       .def("meta_schedule.TaskSchedulerPyTaskScheduler", TaskScheduler::PyTaskScheduler)
+      .def_method("meta_schedule.TaskSchedulerSetReferencePoint",
+                  &TaskSchedulerNode::SetReferencePoint)
       .def_method("meta_schedule.TaskSchedulerTune", &TaskSchedulerNode::Tune)
       .def_method("meta_schedule.TaskSchedulerJoinRunningTask", &TaskSchedulerNode::JoinRunningTask)
       .def_method("meta_schedule.TaskSchedulerNextTaskId", &TaskSchedulerNode::NextTaskId)

@@ -89,6 +89,25 @@ class TaskScheduler(Object):
             The list of results.
         """
         return _ffi_api.TaskSchedulerJoinRunningTask(self, task_id)  # type: ignore # pylint: disable=no-member
+    
+    def set_reference_point(
+        self,
+        ctx: TuneContext,
+        builder: Builder,
+        runner: Runner,
+    ) -> None:
+        """Set the reference point for the task scheduler.
+
+        Parameters
+        ----------
+        ctx : TuneContext
+            The tune context to set the reference point for.
+        builder : Builder
+            The builder to set the reference point for.
+        runner : Runner
+            The runner to set the reference point for.
+        """
+        _ffi_api.TaskSchedulerSetReferencePoint(self, ctx, builder, runner)  # type: ignore # pylint: disable=no-member
 
     def tune(
         self,
@@ -101,7 +120,8 @@ class TaskScheduler(Object):
         runner: Runner,
         measure_callbacks: List[MeasureCallback],
         database: Optional[Database],
-        cost_model: Optional[CostModel],
+        latency_cost_model: Optional[CostModel],
+        bandwidth_cost_model: Optional[CostModel] = None,
     ) -> None:
         """Auto-tuning.
 
@@ -140,7 +160,8 @@ class TaskScheduler(Object):
             runner,
             measure_callbacks,
             database,
-            cost_model,
+            latency_cost_model,
+            bandwidth_cost_model,
         )
 
     def terminate_task(self, task_id: int) -> None:
