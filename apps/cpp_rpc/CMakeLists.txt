@@ -51,9 +51,9 @@ target_include_directories(
 if(BUILD_FOR_ANDROID)
   target_include_directories(
     tvm_rpc
-    PUBLIC "../../3rdparty/GPUBandwidthProfiler/include"
+    PUBLIC "../../3rdparty/MemoryFootprintProfiler/include"
   )
-  target_link_libraries(tvm_rpc PRIVATE GPUBandwidthProfiler)
+  target_link_libraries(tvm_rpc PRIVATE MemoryFootprintProfiler)
 endif()
 
 target_link_libraries(tvm_rpc PUBLIC tvm_ffi_header)

@@ -628,15 +628,17 @@ target_include_directorieS(
 
 if(BUILD_FOR_ANDROID)
   get_filename_component(GPUBANDWIDTH_PROFILER_DIR 
-    "${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/GPUBandwidthProfiler" 
+    "${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/MemoryFootprintProfiler" 
     ABSOLUTE)
   add_subdirectory("${GPUBANDWIDTH_PROFILER_DIR}" 
-                   "${CMAKE_BINARY_DIR}/3rdparty/GPUBandwidthProfiler")
+                   "${CMAKE_BINARY_DIR}/3rdparty/MemoryFootprintProfiler")
   target_include_directories(
     tvm_runtime_objs
-    PRIVATE "3rdparty/GPUBandwidthProfiler/include"
+    PRIVATE "3rdparty/MemoryFootprintProfiler/include"
   )
-  target_link_libraries(tvm_runtime PRIVATE GPUBandwidthProfiler)
+  target_compile_definitions(tvm_runtime_objs PRIVATE BUILD_FOR_ANDROID)
+  target_compile_definitions(tvm_runtime_objs PRIVATE BUILD_ADRENO_BACKEND)
+  target_link_libraries(tvm_runtime PRIVATE MemoryFootprintProfiler)
 endif()
 
 set(TVM_TEST_LIBRARY_NAME tvm)

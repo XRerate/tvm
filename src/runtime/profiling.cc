@@ -27,6 +27,7 @@
 #include <tvm/ffi/reflection/registry.h>
 #include <tvm/runtime/c_backend_api.h>
 #include <tvm/runtime/data_type.h>
+#include <tvm/runtime/memory_footprint_collector.h>
 #include <tvm/runtime/profiling.h>
 #include <tvm/runtime/threading_backend.h>
 
@@ -955,6 +956,7 @@ ffi::Function WrapTimeBwEvaluator(ffi::Function pf, Device dev, int number, int 
       }
       double duration_ms = 0.0;
       int absolute_zero_times = 0;
+      ffi::Map<ffi::String, ffi::Any> bandwidth_metrics;
       do {
         if (duration_ms > 0.0) {
           const double golden_ratio = 1.618;
@@ -966,32 +968,46 @@ ffi::Function WrapTimeBwEvaluator(ffi::Function pf, Device dev, int number, int 
         }
         DeviceAPI::Get(dev)->StreamSync(dev, nullptr);
         // start timing
+        ObjectRef o = MemoryFootprintCollector::Start(DeviceWrapper(dev));
         Timer t = Timer::Start(dev);
-        // Profiler p = Profiler::Start(dev);
         for (int j = 0; j < number; ++j) {
           pf.CallPacked(args, num_args, &temp);
         }
         t->Stop();
-        // p.stop;
         int64_t t_nanos = t->SyncAndGetElapsedNanos();
+        bandwidth_metrics = MemoryFootprintCollector::Stop(o);
         if (t_nanos == 0) absolute_zero_times++;
         duration_ms = t_nanos / 1e6;
       } while (duration_ms < min_repeat_ms && absolute_zero_times < limit_zero_time_iterations);
 
       double speed = duration_ms / 1e3 / number;
-      double bandwidth_mbps = 1000;
+      LOG(INFO) << "WrapTimeBwEvaluator: Speed: " << speed;
+      double total_memory_footprint_bytes =
+          bandwidth_metrics["total_memory_footprint_bytes"].as<CountNode>()->value /
+          static_cast<double>(number);
+      LOG(INFO) << "WrapTimeBwEvaluator: Total memory footprint bytes: " << total_memory_footprint_bytes;
+      LOG(INFO) << "WrapTimeBwEvaluator: Number: " << number;
+      double bandwidth_mbps = total_memory_footprint_bytes / speed / 1e6;
+      LOG(INFO) << "WrapTimeBwEvaluator: Bandwidth MBps: " << bandwidth_mbps;
+
       os.write(reinterpret_cast<char*>(&speed), sizeof(speed));
       os.write(reinterpret_cast<char*>(&bandwidth_mbps), sizeof(bandwidth_mbps));
 
       if (cooldown_interval_ms > 0 && (i % repeats_to_cooldown) == 0) {
         std::this_thread::sleep_for(std::chrono::milliseconds(cooldown_interval_ms));
       }
+
+      LOG(INFO) << "WrapTimeBwEvaluator: End of repeat " << i;
     }
+
+    LOG(INFO) << "WrapTimeBwEvaluator: End of loop";
 
     std::string blob = os.str();
     // return the time.
     *rv = ffi::Bytes(std::move(blob));
   };
+
+  LOG(INFO) << "WrapTimeBwEvaluator: Function created";
   return ffi::Function::FromPacked(ftimer);
 }
 
