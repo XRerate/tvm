@@ -20,6 +20,7 @@ The database that stores serialized tuning records and workloads
 """
 from .database import Database, PyDatabase, TuningRecord, Workload, create
 from .json_database import JSONDatabase
+from .json_pareto_database import JSONParetoDatabase
 from .memory_database import MemoryDatabase
 from .ordered_union_database import OrderedUnionDatabase
 from .schedule_fn_database import ScheduleFnDatabase

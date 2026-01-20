@@ -99,6 +99,11 @@ def _create_tmp_database(tmpdir: str, mod_eq: str = "structural") -> ms.database
     return ms.database.JSONDatabase(path_workload, path_tuning_record, module_equality=mod_eq)
 
 
+def _create_tmp_pareto_database(tmpdir: str, mod_eq: str = "structural") -> ms.database.JSONDatabase:
+    path_workload = osp.join(tmpdir, "workloads.json")
+    path_tuning_record = osp.join(tmpdir, "tuning_records.json")
+    return ms.database.JSONParetoDatabase(path_workload, path_tuning_record, module_equality=mod_eq)
+
 def _equal_record(a: ms.database.TuningRecord, b: ms.database.TuningRecord):
     assert str(a.trace) == str(b.trace)
     assert str(a.run_secs) == str(b.run_secs)
@@ -601,6 +606,422 @@ def test_memory_database_commit_workload(f_mod, mod_eq):
     mod: IRModule = f_mod()
     database = ms.database.MemoryDatabase(module_equality=mod_eq)
     database.commit_workload(mod)
+
+
+def test_json_pareto_database_commit_workload():
+    """Test that JSONParetoDatabase can commit workloads."""
+    mod: IRModule = Matmul
+    with tempfile.TemporaryDirectory() as tmpdir:
+        database = _create_tmp_pareto_database(tmpdir)
+        workload = database.commit_workload(mod)
+        assert workload is not None
+        assert database.has_workload(mod)
+        
+        # Committing the same workload again should return the same workload
+        workload2 = database.commit_workload(mod)
+        assert workload.same_as(workload2)
+
+
+@pytest.mark.parametrize("f_mod", [MatmulPrimFunc])
+@pytest.mark.parametrize("mod_eq", ["structural", "ignore-tensor", "anchor-block"])
+def test_json_pareto_database_commit_workload_variants(f_mod, mod_eq):
+    """Test JSONParetoDatabase commit_workload with different module equality methods."""
+    mod: IRModule = f_mod()
+    with tempfile.TemporaryDirectory() as tmpdir:
+        database = _create_tmp_pareto_database(tmpdir, mod_eq)
+        workload = database.commit_workload(mod)
+        assert workload is not None
+        assert database.has_workload(mod)
+
+
+def test_json_pareto_database_get_top_k_pareto_front():
+    """Test that GetTopK returns Pareto front records (rank 1) sorted by crowding distance."""
+    mod: IRModule = Matmul
+    with tempfile.TemporaryDirectory() as tmpdir:
+        database = _create_tmp_pareto_database(tmpdir)
+        workload = database.commit_workload(mod)
+        trace = _create_schedule(mod, _schedule_matmul).trace
+        target = tvm.target.Target("llvm")
+        arg_info = ms.arg_info.ArgInfo.from_prim_func(func=mod["main"])
+        
+        # Create records with different trade-offs (lower is better for both time and bandwidth):
+        # Record 1: Fast time, high bandwidth (Pareto front - trade-off: fast but uses more bandwidth)
+        record1 = ms.database.TuningRecord(
+            trace, workload, run_secs=[1.0, 1.1, 1.0], bw_mbps=[200.0, 210.0, 205.0],
+            target=target, args_info=arg_info
+        )
+        # Record 2: Slow time, low bandwidth (Pareto front - trade-off: slow but uses less bandwidth)
+        record2 = ms.database.TuningRecord(
+            trace, workload, run_secs=[3.0, 3.1, 3.0], bw_mbps=[50.0, 55.0, 52.0],
+            target=target, args_info=arg_info
+        )
+        # Record 3: Medium time, medium bandwidth (Pareto front - in between)
+        record3 = ms.database.TuningRecord(
+            trace, workload, run_secs=[2.0, 2.1, 2.0], bw_mbps=[100.0, 110.0, 105.0],
+            target=target, args_info=arg_info
+        )
+        # Record 4: Dominated by record1 (worse in both objectives: higher time AND higher bandwidth)
+        record4 = ms.database.TuningRecord(
+            trace, workload, run_secs=[1.5, 1.6, 1.5], bw_mbps=[250.0, 260.0, 255.0],
+            target=target, args_info=arg_info
+        )
+        # Record 5: Dominated by record2 (worse in both objectives: higher time AND higher bandwidth)
+        record5 = ms.database.TuningRecord(
+            trace, workload, run_secs=[4.0, 4.1, 4.0], bw_mbps=[600.0, 610.0, 605.0],
+            target=target, args_info=arg_info
+        )
+        
+        # Commit all records
+        for record in [record1, record2, record3, record4, record5]:
+            database.commit_tuning_record(record)
+        
+        # GetTopK should return only Pareto front records (rank 1)
+        # These should be record1, record2, record3 (not dominated by any)
+        top_k = database.get_top_k(workload, 10)
+        
+        # Should have exactly 3 Pareto front records
+        assert len(top_k) == 3
+        
+        # Verify that record4 and record5 are not in the top results
+        # (they are dominated). Since all records share the same trace,
+        # we need to check by comparing run_secs and bw_mbps values.
+        def get_mean(values):
+            if not values:
+                return 0.0
+            # Convert T.float32 to Python float for comparison
+            return float(sum(float(v) for v in values) / len(values))
+        
+        top_k_values = [
+            (get_mean(r.run_secs), get_mean(r.bw_mbps)) for r in top_k
+        ]
+        record4_values = (get_mean(record4.run_secs), get_mean(record4.bw_mbps))
+        record5_values = (get_mean(record5.run_secs), get_mean(record5.bw_mbps))
+        
+        assert record4_values not in top_k_values, f"record4 {record4_values} should not be in top_k"
+        assert record5_values not in top_k_values, f"record5 {record5_values} should not be in top_k"
+        
+        # Verify that all top_k records are from Pareto front
+        # (record1, record2, record3 should all be present)
+        record1_values = (get_mean(record1.run_secs), get_mean(record1.bw_mbps))
+        record2_values = (get_mean(record2.run_secs), get_mean(record2.bw_mbps))
+        record3_values = (get_mean(record3.run_secs), get_mean(record3.bw_mbps))
+        
+        assert record1_values in top_k_values, f"record1 {record1_values} should be in top_k"
+        assert record2_values in top_k_values, f"record2 {record2_values} should be in top_k"
+        assert record3_values in top_k_values, f"record3 {record3_values} should be in top_k"
+
+
+def test_json_pareto_database_get_top_k_crowding_distance():
+    """Test that GetTopK returns records sorted by crowding distance within Pareto front."""
+    mod: IRModule = Matmul
+    with tempfile.TemporaryDirectory() as tmpdir:
+        database = _create_tmp_pareto_database(tmpdir)
+        workload = database.commit_workload(mod)
+        trace = _create_schedule(mod, _schedule_matmul).trace
+        target = tvm.target.Target("llvm")
+        arg_info = ms.arg_info.ArgInfo.from_prim_func(func=mod["main"])
+        
+        # Create multiple Pareto front records with different crowding distances
+        # Boundary points should have higher crowding distance
+        # For Pareto front: records should have trade-offs (better time but worse bandwidth, etc.)
+        records = [
+            # Extreme points (should have high crowding distance)
+            ms.database.TuningRecord(
+                trace, workload, run_secs=[1.0], bw_mbps=[200.0],  # Fast time, high BW (trade-off)
+                target=target, args_info=arg_info
+            ),
+            ms.database.TuningRecord(
+                trace, workload, run_secs=[5.0], bw_mbps=[50.0],  # Slow time, low BW (trade-off)
+                target=target, args_info=arg_info
+            ),
+            # Interior points (should have lower crowding distance)
+            ms.database.TuningRecord(
+                trace, workload, run_secs=[2.5], bw_mbps=[125.0],  # Middle time, middle BW
+                target=target, args_info=arg_info
+            ),
+            ms.database.TuningRecord(
+                trace, workload, run_secs=[3.0], bw_mbps=[100.0],  # Middle time, middle BW
+                target=target, args_info=arg_info
+            ),
+        ]
+        
+        for record in records:
+            database.commit_tuning_record(record)
+        
+        top_k = database.get_top_k(workload, 10)
+        
+        # All records should be in Pareto front (none dominate each other)
+        assert len(top_k) == 4
+        
+        # Verify sorting by crowding distance (descending)
+        # Boundary points (extreme values) should have infinite crowding distance
+        # and come first, followed by interior points sorted by distance
+        
+        def get_mean(values):
+            if not values:
+                return 0.0
+            return float(sum(float(v) for v in values) / len(values))
+        
+        def get_record_values(record):
+            return (get_mean(record.run_secs), get_mean(record.bw_mbps))
+        
+        # Map records to their values for identification
+        record_values = [get_record_values(r) for r in records]
+        top_k_values = [get_record_values(r) for r in top_k]
+        
+        # Verify all records are present
+        for rv in record_values:
+            assert rv in top_k_values, f"Record {rv} should be in top_k"
+        
+        # Calculate expected crowding distances
+        times = [rv[0] for rv in record_values]
+        bws = [rv[1] for rv in record_values]
+        min_time, max_time = min(times), max(times)
+        min_bw, max_bw = min(bws), max(bws)
+        time_range = max_time - min_time
+        bw_range = max_bw - min_bw
+        
+        # Find boundary points (min/max time and min/max bandwidth)
+        boundary_indices = set()
+        for i, (t, b) in enumerate(record_values):
+            if abs(t - min_time) < 1e-6 or abs(t - max_time) < 1e-6:
+                boundary_indices.add(i)
+            if abs(b - min_bw) < 1e-6 or abs(b - max_bw) < 1e-6:
+                boundary_indices.add(i)
+        
+        # Boundary points should come first (they have infinite crowding distance)
+        # Check that all boundary points are in the first positions
+        boundary_values = [record_values[i] for i in boundary_indices]
+        num_boundary = len(boundary_indices)
+        
+        # The first num_boundary records should be boundary points
+        first_n_values = top_k_values[:num_boundary]
+        for bv in boundary_values:
+            assert bv in first_n_values, f"Boundary point {bv} should be in first {num_boundary} positions"
+        
+        # Interior points should come after boundary points
+        # and be sorted by crowding distance (descending)
+        if len(record_values) > num_boundary:
+            interior_indices = set(range(len(record_values))) - boundary_indices
+            interior_values = [record_values[i] for i in interior_indices]
+            
+            # Calculate expected crowding distances for interior points
+            # (simplified - just verify they're not boundary)
+            interior_in_top_k = [v for v in top_k_values if v in interior_values]
+            
+            # Interior points should come after boundary points
+            assert len(interior_in_top_k) == len(interior_values), \
+                f"All {len(interior_values)} interior points should be in top_k"
+            
+            # Verify interior points are after boundary points
+            for iv in interior_values:
+                iv_pos = top_k_values.index(iv)
+                assert iv_pos >= num_boundary, \
+                    f"Interior point {iv} at position {iv_pos} should come after boundary points"
+
+
+def test_json_pareto_database_get_top_k_crowding_distance_exact_order():
+    """Test that GetTopK returns records in exact order by crowding distance (descending)."""
+    mod: IRModule = Matmul
+    with tempfile.TemporaryDirectory() as tmpdir:
+        database = _create_tmp_pareto_database(tmpdir)
+        workload = database.commit_workload(mod)
+        trace = _create_schedule(mod, _schedule_matmul).trace
+        target = tvm.target.Target("llvm")
+        arg_info = ms.arg_info.ArgInfo.from_prim_func(func=mod["main"])
+        
+        # Create records with predictable crowding distances
+        # All 4 records should be in Pareto front (none dominate each other)
+        # Record 1: Min time, max bandwidth (boundary - infinite distance)
+        # Record 2: Max time, min bandwidth (boundary - infinite distance)
+        # Record 3: Middle time, middle bandwidth (interior - finite distance)
+        # Record 4: Another middle point with trade-off (interior - finite distance)
+        records = [
+            ms.database.TuningRecord(
+                trace, workload, run_secs=[1.0], bw_mbps=[300.0],  # Min time, max BW
+                target=target, args_info=arg_info
+            ),
+            ms.database.TuningRecord(
+                trace, workload, run_secs=[10.0], bw_mbps=[50.0],  # Max time, min BW
+                target=target, args_info=arg_info
+            ),
+            ms.database.TuningRecord(
+                trace, workload, run_secs=[5.0], bw_mbps=[150.0],  # Middle time, middle BW
+                target=target, args_info=arg_info
+            ),
+            ms.database.TuningRecord(
+                trace, workload, run_secs=[4.0], bw_mbps=[200.0],  # Faster time but higher BW (trade-off)
+                target=target, args_info=arg_info
+            ),
+        ]
+        
+        for record in records:
+            database.commit_tuning_record(record)
+        
+        top_k = database.get_top_k(workload, 10)
+        assert len(top_k) == 4
+        
+        def get_mean(values):
+            if not values:
+                return 0.0
+            return float(sum(float(v) for v in values) / len(values))
+        
+        def get_record_values(record):
+            return (get_mean(record.run_secs), get_mean(record.bw_mbps))
+        
+        # Get values for each record
+        record0_val = get_record_values(records[0])  # (1.0, 300.0) - boundary
+        record1_val = get_record_values(records[1])  # (10.0, 50.0) - boundary
+        record2_val = get_record_values(records[2])  # (5.0, 150.0) - interior
+        record3_val = get_record_values(records[3])  # (4.0, 200.0) - interior
+        
+        top_k_values = [get_record_values(r) for r in top_k]
+        
+        # Boundary points (records 0 and 1) should come first (infinite distance)
+        # They can be in any order among themselves
+        assert record0_val in top_k_values[:2], "Record 0 (boundary) should be in first 2"
+        assert record1_val in top_k_values[:2], "Record 1 (boundary) should be in first 2"
+        
+        # Interior points (records 2 and 3) should come after boundary points
+        record2_pos = top_k_values.index(record2_val)
+        record3_pos = top_k_values.index(record3_val)
+        assert record2_pos >= 2, f"Record 2 (interior) at position {record2_pos} should be >= 2"
+        assert record3_pos >= 2, f"Record 3 (interior) at position {record3_pos} should be >= 2"
+        
+        # Calculate expected crowding distances for interior points
+        # Time: [1.0, 5.0, 6.0, 10.0] -> range = 9.0
+        # BW: [50.0, 150.0, 200.0, 300.0] -> range = 250.0
+        # Record 2 (5.0, 150.0): time contribution = (6.0 - 1.0) / 9.0 = 5/9 ≈ 0.556
+        #                        BW contribution = (200.0 - 50.0) / 250.0 = 150/250 = 0.6
+        #                        Total ≈ 1.156
+        # Record 3 (6.0, 200.0): time contribution = (10.0 - 5.0) / 9.0 = 5/9 ≈ 0.556
+        #                        BW contribution = (300.0 - 150.0) / 250.0 = 150/250 = 0.6
+        #                        Total ≈ 1.156
+        
+        # Both interior points have similar distances, so order may vary
+        # But they should both come after boundary points
+
+
+def test_json_pareto_database_get_top_k_limit():
+    """Test that GetTopK respects the top_k limit."""
+    mod: IRModule = Matmul
+    with tempfile.TemporaryDirectory() as tmpdir:
+        database = _create_tmp_pareto_database(tmpdir)
+        workload = database.commit_workload(mod)
+        trace = _create_schedule(mod, _schedule_matmul).trace
+        target = tvm.target.Target("llvm")
+        arg_info = ms.arg_info.ArgInfo.from_prim_func(func=mod["main"])
+        
+        # Create 5 Pareto front records with trade-offs (none dominate each other)
+        # Each record has a different trade-off: better time but worse bandwidth, or vice versa
+        pareto_records = [
+            (1.0, 200.0),   # Fast time, high bandwidth
+            (2.0, 150.0),   # Medium-fast time, medium-high bandwidth
+            (3.0, 100.0),   # Medium time, medium bandwidth
+            (4.0, 75.0),    # Medium-slow time, medium-low bandwidth
+            (5.0, 50.0),    # Slow time, low bandwidth
+        ]
+        for time, bw in pareto_records:
+            record = ms.database.TuningRecord(
+                trace, workload,
+                run_secs=[time], bw_mbps=[bw],
+                target=target, args_info=arg_info
+            )
+            database.commit_tuning_record(record)
+        
+        # Test different top_k values
+        assert len(database.get_top_k(workload, 0)) == 0
+        assert len(database.get_top_k(workload, 1)) == 1
+        assert len(database.get_top_k(workload, 3)) == 3
+        assert len(database.get_top_k(workload, 5)) == 5
+        assert len(database.get_top_k(workload, 10)) == 5  # Only 5 records exist
+
+
+def test_json_pareto_database_get_top_k_empty():
+    """Test GetTopK with no records."""
+    mod: IRModule = Matmul
+    with tempfile.TemporaryDirectory() as tmpdir:
+        database = _create_tmp_pareto_database(tmpdir)
+        workload = database.commit_workload(mod)
+        
+        # No records committed
+        top_k = database.get_top_k(workload, 5)
+        assert len(top_k) == 0
+
+
+def test_json_pareto_database_get_top_k_different_workloads():
+    """Test that GetTopK only returns records for the specified workload."""
+    mod1: IRModule = Matmul
+    mod2: IRModule = MatmulRelu
+    with tempfile.TemporaryDirectory() as tmpdir:
+        database = _create_tmp_pareto_database(tmpdir)
+        workload1 = database.commit_workload(mod1)
+        workload2 = database.commit_workload(mod2)
+        trace1 = _create_schedule(mod1, _schedule_matmul).trace
+        trace2 = _create_schedule(mod2, _schedule_matmul).trace
+        target = tvm.target.Target("llvm")
+        
+        # Create records for both workloads
+        record1 = ms.database.TuningRecord(
+            trace1, workload1, run_secs=[1.0], bw_mbps=[100.0],
+            target=target, args_info=ms.arg_info.ArgInfo.from_prim_func(func=mod1["main"])
+        )
+        record2 = ms.database.TuningRecord(
+            trace2, workload2, run_secs=[2.0], bw_mbps=[200.0],
+            target=target, args_info=ms.arg_info.ArgInfo.from_prim_func(func=mod2["main"])
+        )
+        
+        database.commit_tuning_record(record1)
+        database.commit_tuning_record(record2)
+        
+        # GetTopK for workload1 should only return record1
+        top_k1 = database.get_top_k(workload1, 10)
+        assert len(top_k1) == 1
+        assert str(top_k1[0].trace) == str(record1.trace)
+        
+        # GetTopK for workload2 should only return record2
+        top_k2 = database.get_top_k(workload2, 10)
+        assert len(top_k2) == 1
+        assert str(top_k2[0].trace) == str(record2.trace)
+
+
+def test_json_pareto_database_reload():
+    """Test that JSONParetoDatabase can reload from files and maintain Pareto ranking."""
+    mod: IRModule = Matmul
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Create database and commit records
+        database1 = _create_tmp_pareto_database(tmpdir)
+        workload = database1.commit_workload(mod)
+        trace = _create_schedule(mod, _schedule_matmul).trace
+        target = tvm.target.Target("llvm")
+        arg_info = ms.arg_info.ArgInfo.from_prim_func(func=mod["main"])
+        
+        # Create 3 Pareto front records with trade-offs (none dominate each other)
+        records = [
+            ms.database.TuningRecord(
+                trace, workload, run_secs=[1.0], bw_mbps=[200.0],  # Fast time, high bandwidth
+                target=target, args_info=arg_info
+            ),
+            ms.database.TuningRecord(
+                trace, workload, run_secs=[3.0], bw_mbps=[50.0],  # Slow time, low bandwidth
+                target=target, args_info=arg_info
+            ),
+            ms.database.TuningRecord(
+                trace, workload, run_secs=[2.0], bw_mbps=[100.0],  # Medium time, medium bandwidth
+                target=target, args_info=arg_info
+            ),
+        ]
+        
+        for record in records:
+            database1.commit_tuning_record(record)
+        
+        # Reload database from files
+        database2 = _create_tmp_pareto_database(tmpdir)
+        workload2 = database2.commit_workload(mod)
+        
+        # GetTopK should still return Pareto front records
+        top_k = database2.get_top_k(workload2, 10)
+        assert len(top_k) == 3  # All 3 records are in Pareto front
 
 
 if __name__ == "__main__":

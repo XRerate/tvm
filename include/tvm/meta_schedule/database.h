@@ -498,6 +498,17 @@ class Database : public runtime::ObjectRef {
    */
   TVM_DLL static Database JSONDatabase(ffi::String path_workload, ffi::String path_tuning_record,
                                        bool allow_missing, ffi::String mod_eq_name = "structural");
+
+  /*!
+   * \brief Create a default database that uses JSON file for tuning records.
+   * \param path_workload The path to the workload table.
+   * \param path_tuning_record The path to the database table.
+   * \param allow_missing Whether to create new file when the given path is not found.
+   * \param mod_eq_name A string to specify the module equality testing and hashing method.
+   */
+   TVM_DLL static Database JSONParetoDatabase(ffi::String path_workload, ffi::String path_tuning_record,
+    bool allow_missing, ffi::String mod_eq_name = "structural");
+    
   /*!
    * \brief A database composed of multiple databases, allowing users to guide IR rewriting using
    * combined knowledge of those databases. To each query, it returns the best record among all the

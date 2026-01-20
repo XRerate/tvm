@@ -169,7 +169,7 @@ class TuningRecord(Object):
 class Database(Object):
     """The abstract database interface."""
 
-    DatabaseType = Union["Database", Literal["json", "memory"]]
+    DatabaseType = Union["Database", Literal["json", "memory", "json_pareto"]]
 
     def has_workload(self, mod: IRModule) -> bool:
         """Check if the database has the given workload.
@@ -410,6 +410,7 @@ class Database(Object):
         """
         from . import (  # pylint: disable=import-outside-toplevel
             JSONDatabase,
+            JSONParetoDatabase,
             MemoryDatabase,
             OrderedUnionDatabase,
             ScheduleFnDatabase,
@@ -420,6 +421,8 @@ class Database(Object):
             return ScheduleFnDatabase(kind, *args, **kwargs)  # type: ignore
         if kind == "json":
             return JSONDatabase(*args, **kwargs)
+        if kind == "json_pareto":
+            return JSONParetoDatabase(*args, **kwargs)
         if kind == "memory":
             return MemoryDatabase(*args, **kwargs)  # type: ignore
         if kind == "union":
