@@ -170,7 +170,8 @@ def test_meta_schedule_task_scheduler_single():
         runner=DummyRunner(),
         database=database,
         measure_callbacks=[ms.measure_callback.AddToDatabase()],
-        cost_model=None,
+        latency_cost_model=None,
+        bandwidth_cost_model=None,
     )
     assert len(database) == max_trials_per_task
 
@@ -216,7 +217,8 @@ def test_meta_schedule_task_scheduler_multiple():
         max_trials_global=max_trials_per_task * len(tasks),
         max_trials_per_task=max_trials_per_task,
         num_trials_per_iter=num_trials_per_iter,
-        cost_model=None,
+        latency_cost_model=None,
+        bandwidth_cost_model=None,
     )
     assert len(database) == max_trials_per_task * len(tasks)
     for task in tasks:
@@ -288,7 +290,8 @@ def test_meta_schedule_task_scheduler_override_next_task_id_only():  # pylint: d
         max_trials_global=max_trials_per_task * len(tasks),
         max_trials_per_task=max_trials_per_task,
         num_trials_per_iter=6,
-        cost_model=None,
+        latency_cost_model=None,
+        bandwidth_cost_model=None,
     )
     assert len(database) == max_trials_per_task * len(tasks)
     for task in tasks:
@@ -343,7 +346,8 @@ def test_meta_schedule_task_scheduler_multiple_gradient_based():
         max_trials_global=max_trials_per_task * len(tasks),
         max_trials_per_task=max_trials_per_task,
         num_trials_per_iter=6,
-        cost_model=None,
+        latency_cost_model=None,
+        bandwidth_cost_model=None,
     )
     assert len(database) == max_trials_per_task * len(tasks)
     for task in tasks:
@@ -427,7 +431,8 @@ def test_meta_schedule_task_scheduler_gradient_based_with_null_search_strategy()
         max_trials_global=30,
         max_trials_per_task=10,
         num_trials_per_iter=6,
-        cost_model=None,
+        latency_cost_model=None,
+        bandwidth_cost_model=None,
     )
 
     assert len(database) == 10

@@ -112,7 +112,7 @@ class LocalRunnerFuture(PyRunnerFuture):
         return True
 
     def result(self) -> RunnerResult:
-        return RunnerResult(self.res, self.error_message)
+        return RunnerResult(self.res, None, self.error_message)
 
 
 def _worker_func(

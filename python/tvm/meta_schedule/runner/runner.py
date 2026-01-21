@@ -93,8 +93,8 @@ class RunnerResult(Object):
     def __init__(
         self,
         run_secs: Optional[List[float]],
-        bw_mbps: Optional[List[float]],
-        error_msg: Optional[str],
+        bw_mbps: Optional[List[float]] = None,
+        error_msg: Optional[str] = None,
     ) -> None:
         """Constructor
 

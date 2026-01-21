@@ -77,7 +77,7 @@ def test_meta_schedule_measure_callback():
         0,
         [ms.MeasureCandidate(Schedule(Matmul), None)],
         [ms.builder.BuilderResult("test_build", None)],
-        [ms.runner.RunnerResult([1.0, 2.1], None)],
+        [ms.runner.RunnerResult([1.0, 2.1], None, None)],
     )
 
 
@@ -101,7 +101,7 @@ def test_meta_schedule_measure_callback_fail():
             0,
             [ms.MeasureCandidate(Schedule(Matmul), None)],
             [ms.builder.BuilderResult("test_build", None)],
-            [ms.runner.RunnerResult([1.0, 2.1], None)],
+            [ms.runner.RunnerResult([1.0, 2.1], None, None)],
         )
 
 
@@ -130,7 +130,7 @@ def test_meta_schedule_measure_callback_update_cost_model_with_zero():
             return True
 
         def result(self) -> ms.runner.RunnerResult:
-            return ms.runner.RunnerResult([0.0, 0.0], None)
+            return ms.runner.RunnerResult([0.0, 0.0], None, None)
 
     @ms.derived_object
     class AllZeroRunner(ms.runner.PyRunner):
@@ -155,7 +155,7 @@ def test_meta_schedule_measure_callback_update_cost_model_with_runtime_error():
             return True
 
         def result(self) -> ms.runner.RunnerResult:
-            return ms.runner.RunnerResult(None, "error")
+            return ms.runner.RunnerResult(None, None, "error")
 
     @ms.derived_object
     class EmptyRunner(ms.runner.PyRunner):

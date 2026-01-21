@@ -117,6 +117,7 @@ def run_evaluator_common(
         device.sync()
         profile_result = evaluator(*args)
         repeated_costs.append(profile_result.results)
+
     costs = [float(cost) for cost in itertools.chain.from_iterable(repeated_costs)]
     return costs
 
@@ -141,7 +142,11 @@ def run_evaluator_bw(
         device.sync()
         profile_result = evaluator(*args)
         repeated_costs.append(profile_result.results)
-    
-    costs_lat = [float(cost_lat) for cost_lat, cost_bw in itertools.chain.from_iterable(repeated_costs)]
-    costs_bw = [float(cost_bw) for cost_lat, cost_bw in itertools.chain.from_iterable(repeated_costs)]
+
+    costs_lat = []
+    costs_bw = []
+    for cost_lat, cost_bw in itertools.chain.from_iterable(repeated_costs):
+        costs_lat.append(float(cost_lat))
+        costs_bw.append(float(cost_bw))
+
     return (costs_lat, costs_bw)

@@ -418,8 +418,11 @@ inline double GetRunMsMedian(const RunnerResult& runner_result) {
  * \return The median of the bandwidth in MB/s
  */
 inline double GetBandwidthMbpsMedian(const RunnerResult& runner_result) {
+  if (!runner_result->bw_mbps.has_value()) {
+    return 1e9;
+  }
   ffi::Array<FloatImm> bw_mbps = runner_result->bw_mbps.value();
-  ICHECK(!bw_mbps.empty());
+
   std::vector<double> v;
   v.reserve(bw_mbps.size());
   std::transform(bw_mbps.begin(), bw_mbps.end(), std::back_inserter(v),

@@ -118,8 +118,13 @@ class RPCRunnerFuture(PyRunnerFuture):
     def result(self) -> RunnerResult:
         try:
             result = self.future.result()
-            run_secs: List[float] = result[0]
-            bw_mbps: List[float] = result[1]
+            if isinstance(result, tuple):
+                run_secs = result[0]
+                bw_mbps = result[1]
+            else:
+                run_secs = result
+                bw_mbps = None
+            
         except TimeoutError:
             return RunnerResult(
                 None,
