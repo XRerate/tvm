@@ -161,8 +161,12 @@ def _dummy_candidate():
     return MeasureCandidate(Schedule(Matmul), [])
 
 
-def _dummy_result(num_samples: int = 4, max_run_sec: int = 10):
-    return RunnerResult(list(np.random.rand(num_samples) * max_run_sec + 1e-6), None)
+def _dummy_result(num_samples: int = 4, max_run_sec: int = 10, max_bw_mbps: int = 1000):
+    return RunnerResult(
+        list(np.random.rand(num_samples) * max_run_sec + 1e-6), 
+        list(np.random.rand(num_samples) * max_bw_mbps + 1e-6), 
+        None
+    )
 
 
 def test_meta_schedule_xgb_model():

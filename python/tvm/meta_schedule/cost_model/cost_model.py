@@ -106,7 +106,7 @@ class CostModel(Object):
 
     @staticmethod
     def create(
-        kind: Literal["xgb", "mlp", "random", "none"],
+        kind: Literal["xgb", "xgb_bw", "mlp", "random", "none"],
         *args,
         **kwargs,
     ) -> "CostModel":
@@ -114,18 +114,21 @@ class CostModel(Object):
 
         Parameters
         ----------
-        kind : Literal["xgb", "mlp", "random", "none"]
-            The kind of the cost model. Can be "xgb", "mlp", "random" or "none".
+        kind : Literal["xgb", "xgb_bw", "mlp", "random", "none"]
+            The kind of the cost model. Can be "xgb", "xgb_bw", "mlp", "random" or "none".
 
         Returns
         -------
         cost_model : CostModel
             The created cost model.
         """
-        from . import RandomModel, XGBModel  # pylint: disable=import-outside-toplevel
+        from . import RandomModel, XGBModel, XGBBWModel  # pylint: disable=import-outside-toplevel
 
         if kind == "xgb":
             return XGBModel(*args, **kwargs)  # type: ignore
+            
+        if kind == "xgb_bw":
+            return XGBBWModel(*args, **kwargs)  # type: ignore
 
         # params only relevant to XGBModel
         _xgb_params = ["num_tuning_cores", "tree_method"]
