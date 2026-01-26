@@ -1,0 +1,74 @@
+# CPU-specific autotune configuration example
+
+# Common settings shared across all backends
+[autotune.common]
+tracker_host = "127.0.0.1"
+tracker_port = 9190
+tracker_key  = "android64"
+bench_key    = "android64_bench"
+tvm_ndk_cc = "/home/spl/android/ndk/android-ndk-r25c/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang++"
+export = "so"
+log_dir = "/home/spl/tvm-android/tuning_logs"
+
+# Number of tuning trials per shape
+trials = 1000
+num_trials_per_iter = 5
+
+# Timeout settings (seconds)
+builder_timeout_sec = 5
+session_timeout_sec = 2
+session_priority = 1
+
+# Benchmark settings
+bench_session_timeout_sec = 2
+bench_oom_retries = 0
+bench_oom_cooldown_sec = 0
+
+# Evaluator settings
+eval_number = 1
+eval_repeat = 1
+eval_min_repeat_ms = 0
+eval_enable_cpu_cache_flush = false
+
+# Matrix shapes to test (M, K, N)
+shapes = [
+  # ----- Basic Shapes -----
+  # [64, 64, 64],
+  # [128, 128, 128],
+  # [256, 256, 256],
+  # [512, 512, 512],
+  # [1024, 1024, 1024],
+
+  # # ----- CLIP L-14 -----
+  [257, 1024, 3072],
+  [257, 1024, 4096],
+
+  # # ----- CLIP B-16 -----
+  [197, 768, 2304],
+  [197, 768, 3072],
+
+  # ----- InternVL3.5-1B -----
+  [1, 1024, 4096],
+  [1, 1024, 3072],
+
+  # ----- Qwen2-VL-2B -----
+  [1, 1536, 2048],
+  [1, 1536, 8960],
+  [1, 8192, 8192]
+]
+
+# CPU-specific settings
+[autotune.cpu]
+backend = "cpu"
+num_cores = 8
+
+# Target variants: build each schedule with different ISA features
+# This enables comparison of performance across CPU instruction sets
+target_variants = [
+  # {name = "base", extra = ""},
+  # {name = "neon", extra = "-mcpu=generic -mattr=+neon"},
+  {name = "neon+dotprod", extra = "-mcpu=generic -mattr=+neon,+dotprod"},
+  # Uncomment for full feature set (requires compatible hardware):
+  # {name = "full", extra = "-mcpu=generic -mattr=+neon,+dotprod,+i8mm,+bf16,+fp16fml"},
+]
+

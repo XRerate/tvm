@@ -1,0 +1,8 @@
+*.txt
+*.csv
+*.ipynb
+
+__pycache__/
+tuning_logs/
+
+*_plots

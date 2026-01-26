@@ -1,0 +1,1 @@
+adb shell "cd /data/local/tmp; LD_LIBRARY_PATH=/data/local/tmp/lib ADSP_LIBRARY_PATH=/data/local/tmp/lib /data/local/tmp/bin/tvm_rpc server --port=9090 --tracker=127.0.0.1:9190 --key=android-dev.R3CX80PSH7N"

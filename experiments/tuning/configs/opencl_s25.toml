@@ -1,0 +1,101 @@
+# OpenCL-specific autotune configuration
+
+# Common settings shared across all backends
+[autotune.common]
+tracker_host = "127.0.0.1"
+tracker_port = 9190
+tracker_key  = "android-dev.R3CX80PSH7N"
+bench_key    = "android-dev.R3CX80PSH7N_bench"
+tvm_ndk_cc = "/home/spl/android/ndk/android-ndk-r25c/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang++"
+export = "so"
+log_dir = "/home/spl/tvm-android/tuning_logs"
+
+# Search strategy and database
+strategy = "nsgaii"
+database = "json_pareto"
+
+# Number of tuning trials per shape
+trials = 2000
+num_trials_per_iter = 5
+
+# Timeout settings (seconds)
+builder_timeout_sec = 10
+session_timeout_sec = 60
+session_priority = 1
+
+# Benchmark settings
+bench_session_timeout_sec = 2
+bench_oom_retries = 0
+bench_oom_cooldown_sec = 0
+
+# Evaluator settings
+eval_number = 1
+eval_repeat = 10
+eval_min_repeat_ms = 500
+eval_enable_cpu_cache_flush = false
+
+shapes = [
+  # ----- Basic Shapes -----
+  # [64, 64, 64],
+  # [128, 128, 128],
+  # [256, 256, 256],
+  # [512, 512, 512],
+  # [1024, 1024, 1024],
+
+  # ----- CLIP L-14 -----
+  [257, 1024, 3072],
+  # [257, 1024, 4096],
+
+  # ----- CLIP B-16 -----
+  # [197, 768, 2304],
+  # [197, 768, 3072],
+
+  # ----- InternVL3.5-1B -----
+  # [1, 1024, 4096],
+  # [1, 1024, 3072],
+
+  # ----- Qwen2-VL-2B -----
+  # [1, 1536, 2048],
+  # [1, 1536, 8960],
+]
+
+# OpenCL-specific settings
+[autotune.opencl]
+backend = "opencl"
+
+# Device info (from cl_query_android output)
+# Fill in with actual values from your Android device
+[autotune.opencl.device_info]
+name = "Adreno (TBD)"                     # CL_DEVICE_NAME
+max_compute_units = 12                     # CL_DEVICE_MAX_COMPUTE_UNITS
+global_mem_size = 5_814_773_760            # CL_DEVICE_GLOBAL_MEM_SIZE (bytes)
+max_mem_alloc_size = 1_073_741_824           # CL_DEVICE_MAX_MEM_ALLOC_SIZE (bytes)
+local_mem_size = 32_768                    # CL_DEVICE_LOCAL_MEM_SIZE (bytes)
+max_work_group_size = 1024                  # CL_DEVICE_MAX_WORK_GROUP_SIZE
+max_work_item_sizes = [1024, 1024, 1024]      # CL_DEVICE_MAX_WORK_ITEM_SIZES
+preferred_vector_width_float = 4           # CL_DEVICE_PREFERRED_VECTOR_WIDTH_FLOAT
+
+# Advanced target configuration (optional overrides)
+# If not specified, values from device_info will be used
+max_num_threads = 256                      # Override: max threads per block
+max_shared_memory_per_block = 32_768       # Override: max local memory per workgroup
+max_function_args = 128                    # Max kernel arguments
+texture_spatial_limit = 16384              # Texture size limit
+thread_warp_size = 64                       # Thread warp size (GPU-specific)
+
+# MetaSchedule space configuration
+[autotune.opencl.space]
+# Schedule rule settings
+max_jobs_per_core = 1                      # Conservative parallelism
+max_vectorize_extent = 4                   # Max vectorization width (based on preferred_vector_width_float)
+# unroll_max_steps = [0, 16, 32, 64]         # Unroll candidates (prevent code bloat)
+unroll_max_steps = [0, 16, 32]         # Unroll candidates (prevent code bloat)
+unroll_explicit = true                     # Explicit unrolling
+
+# Tile size candidates for GPU
+# These are suggestions for tile exploration
+tile_sizes = [1, 2, 4, 8, 16, 32, 64, 128, 256]
+
+# Note: target_variants are typically not used for GPU backends
+# GPU tuning focuses on tile sizes, scheduling, and memory hierarchy
+

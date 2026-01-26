@@ -1,0 +1,88 @@
+# Vulkan-specific autotune configuration
+
+# Common settings shared across all backends
+[autotune.common]
+tracker_host = "127.0.0.1"
+tracker_port = 9190
+tracker_key  = "android64"
+bench_key    = "android64_bench"
+tvm_ndk_cc = "/home/seonjunkim/opt/android-ndk-r29/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang++"
+export = "so"
+log_dir = "/home/seonjunkim/projects/tvm/tuning/tuning_logs"
+
+# Number of tuning trials per shape
+trials = 3
+num_trials_per_iter = 1
+
+# Timeout settings (seconds)
+builder_timeout_sec = 180.0
+session_timeout_sec = 120
+session_priority = 1
+
+# Benchmark settings
+bench_session_timeout_sec = 60
+bench_oom_retries = 2
+bench_oom_cooldown_sec = 5
+
+# Evaluator settings
+eval_number = 1
+eval_repeat = 1
+eval_min_repeat_ms = 0
+eval_enable_cpu_cache_flush = false
+
+shapes = [
+  # ----- Basic Shapes -----
+  [64, 64, 64],
+#   [128, 128, 128],
+#   [256, 256, 256],
+
+  # # ----- CLIP L-14 -----
+  # [257, 1024, 3072],
+  # [257, 1024, 4096],
+
+  # # ----- CLIP B-16 -----
+  # [197, 768, 2304],
+  # [197, 768, 3072],
+
+  # # ----- InternVL3.5-1B -----
+  # [1, 1024, 4096],
+  # [1, 1024, 3072],
+
+  # # ----- Qwen2-VL-2B -----
+  # [1, 1536, 2048],
+  # [1, 1536, 8960],
+]
+
+# Vulkan-specific settings
+[autotune.vulkan]
+backend = "vulkan"
+
+# Device info (from Vulkan device query)
+# Fill in with actual values from your Android device
+[autotune.vulkan.device_info]
+name = "Adreno (TBD)"                      # Device name
+max_compute_units = 4                       # Similar to CL_DEVICE_MAX_COMPUTE_UNITS
+global_mem_size = 3_221_225_472             # Device memory (bytes)
+max_mem_alloc_size = 805_306_368            # Max allocation size (bytes)
+local_mem_size = 32_768                     # Workgroup local memory (bytes)
+max_work_group_size = 256                   # Max workgroup size
+max_work_item_sizes = [256, 256, 256]       # Max workgroup dimensions
+
+# Advanced target configuration (optional overrides)
+# If not specified, values from device_info will be used
+max_num_threads = 256                       # Override: max threads per block
+max_shared_memory_per_block = 32_768        # Override: max local memory per workgroup
+
+# MetaSchedule space configuration
+[autotune.vulkan.space]
+# Schedule rule settings
+max_jobs_per_core = 1                      # Conservative parallelism
+max_vectorize_extent = 4                   # Max vectorization width
+unroll_max_steps = [0, 16, 32, 64]         # Unroll candidates (prevent code bloat)
+unroll_explicit = true                     # Explicit unrolling
+
+# Tile size candidates for GPU
+tile_sizes = [1, 2, 4, 8, 16, 32, 64, 128, 256]
+
+# Note: target_variants are typically not used for GPU backends
+# Vulkan tuning focuses on compute shader optimization, memory barriers, and descriptor management
