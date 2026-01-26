@@ -285,6 +285,8 @@ class NSGAIISearchNode : public SearchStrategyNode {
     CostModel bandwidth_cost_model_{ffi::UnsafeInit()};
     /*! \brief The token registered for the given workload in database. */
     Workload token_{ffi::UnsafeInit()};
+    /*! \brief The current population preserved between iterations (for NSGA-II elitism). */
+    std::vector<Schedule> current_population_;
 
     explicit State(NSGAIISearchNode* self, int max_trials, int num_trials_per_iter,
                    ffi::Array<Schedule> design_space_schedules, Database database,
@@ -722,9 +724,10 @@ std::vector<Schedule> NSGAIISearchNode::State::EvolveWithCostModel(std::vector<S
         }
       }
       
-      // If last iteration, select final candidates and return
+      // If last iteration, select final population and return
       if (iter == self->genetic_num_iters) {
-        return NSGAIISelectNextGeneration(population, latency_scores, bandwidth_scores, num);
+        // Return the full evolved population (for preservation), not just num candidates
+        return NSGAIISelectNextGeneration(population, latency_scores, bandwidth_scores, pop_size);
       }
       
       // Cost model scores are "the larger the better", but Pareto dominance assumes minimization.
@@ -856,47 +859,59 @@ std::vector<Schedule> NSGAIISearchNode::State::EvolveWithCostModel(std::vector<S
   return NSGAIISelectNextGeneration(population, 
       PredictNormalizedScore(population, ffi::GetRef<TuneContext>(self->ctx_), this->latency_cost_model_),
       PredictNormalizedScore(population, ffi::GetRef<TuneContext>(self->ctx_), this->bandwidth_cost_model_),
-      num);
+      pop_size);
 }
 
 std::vector<Schedule> NSGAIISearchNode::State::PickWithEpsGreedy(
-    const std::vector<Schedule>& unmeasured, const std::vector<Schedule>& bests, int num) {
+    const std::vector<Schedule>& all_solutions, const std::vector<Schedule>& bests, int num) {
   auto _ = Profiler::TimedScope("NSGAIISearch/PickWithEpsGreedy");
+  // CRITICAL FIX: Include all solutions (measured + unmeasured) in selection pool
+  // Previously only unmeasured solutions were considered, breaking NSGA-II selection
   int num_rands = num * self->eps_greedy;
   int num_bests = num - num_rands;
-  std::vector<int> rands =
-      tir::SampleWithoutReplacement(&self->rand_state_, unmeasured.size(), unmeasured.size());
+  std::vector<int> all_rands =
+      tir::SampleWithoutReplacement(&self->rand_state_, all_solutions.size(), all_solutions.size());
+  std::vector<int> bests_rands =
+      tir::SampleWithoutReplacement(&self->rand_state_, bests.size(), bests.size());
   std::vector<Schedule> results;
   results.reserve(num);
   IRModuleSet& measured_workloads = this->measured_workloads_;
+  // Track duplicates within this batch (not across iterations)
+  IRModuleSet batch_seen(database_->GetModuleEquality());
   for (int i = 0, i_bests = 0, i_rands = 0; i < num; ++i) {
     bool has_best = i_bests < static_cast<int>(bests.size());
-    bool has_rand = i_rands < static_cast<int>(rands.size());
+    bool has_rand = i_rands < static_cast<int>(all_rands.size());
     // Pick a schedule
     Schedule sch{nullptr};
     // If needs `bests`, then prefer `bests`
     if (i < num_bests) {
       if (has_best) {
-        sch = bests[i_bests++];
+        sch = bests[bests_rands[i_bests++]];
       } else if (has_rand) {
-        sch = unmeasured[rands[i_rands++]];
+        sch = all_solutions[all_rands[i_rands++]];
       } else {
         break;
       }
     } else {
-      // Else prefer `rands`
+      // Else prefer `rands` (from all_solutions, which includes measured solutions)
       if (has_rand) {
-        sch = unmeasured[rands[i_rands++]];
+        sch = all_solutions[all_rands[i_rands++]];
       } else if (has_best) {
-        sch = bests[i_bests++];
+        sch = bests[bests_rands[i_bests++]];
       } else {
         break;
       }
     }
     IRModule mod = sch->mod();
     size_t shash = ModuleHash(mod);
-    if (!measured_workloads.Has(mod, shash)) {
-      measured_workloads.Add(mod, shash);
+    // CRITICAL FIX 3: Allow re-selecting solutions from preserved population
+    // Only avoid duplicates within the current batch, not across iterations
+    if (!batch_seen.Has(mod, shash)) {
+      batch_seen.Add(mod, shash);
+      // Add to measured_workloads_ to track what we're sending for measurement
+      if (!measured_workloads.Has(mod, shash)) {
+        measured_workloads.Add(mod, shash);
+      }
       results.push_back(sch);
     }
   }
@@ -918,30 +933,128 @@ ffi::Optional<ffi::Array<MeasureCandidate>> NSGAIISearchNode::State::GenerateMea
   inits.reserve(pop);
 
   TVM_PY_LOG(INFO, self->ctx_->logger) << "Generating candidates......";
-  std::vector<Schedule> measured = PickBestFromDatabase(pop * self->init_measured_ratio);
-  TVM_PY_LOG(INFO, self->ctx_->logger)
-      << "Picked top " << measured.size() << " candidate(s) from database";
-  std::vector<Schedule> unmeasured = SampleInitPopulation(pop - measured.size());
-  if (static_cast<int>(unmeasured.size()) < self->init_min_unmeasured) {
-    TVM_PY_LOG(WARNING, self->ctx_->logger)
-        << "Cannot sample enough initial population, NSGA-II search failed.";
-    return std::nullopt;
+  
+  // NSGA-II Fix: Preserve population between iterations (elitism)
+  if (current_population_.empty()) {
+    // First iteration: Initialize from database + new solutions
+    int min_measured = static_cast<int>(pop * self->init_measured_ratio);
+    int max_measured = pop;  // Can use up to full population size for measured solutions
+    std::vector<Schedule> measured = PickBestFromDatabase(max_measured);
+    
+    if (static_cast<int>(measured.size()) < min_measured) {
+      TVM_PY_LOG(INFO, self->ctx_->logger)
+          << "Only " << measured.size() << " Pareto optimal solution(s) available in database "
+          << "(minimum desired: " << min_measured << ")";
+    } else {
+      TVM_PY_LOG(INFO, self->ctx_->logger)
+          << "Picked " << measured.size() << " Pareto optimal candidate(s) from database "
+          << "(preserving elitism)";
+    }
+    
+    std::vector<Schedule> unmeasured = SampleInitPopulation(pop - static_cast<int>(measured.size()));
+    if (static_cast<int>(unmeasured.size()) < self->init_min_unmeasured) {
+      TVM_PY_LOG(WARNING, self->ctx_->logger)
+          << "Cannot sample enough initial population, NSGA-II search failed.";
+      return std::nullopt;
+    }
+    TVM_PY_LOG(INFO, self->ctx_->logger) << "Sampled " << unmeasured.size() << " candidate(s)";
+    
+    inits.insert(inits.end(), measured.begin(), measured.end());
+    inits.insert(inits.end(), unmeasured.begin(), unmeasured.end());
+  } else {
+    // Subsequent iterations: Start from preserved population (NSGA-II elitism)
+    TVM_PY_LOG(INFO, self->ctx_->logger)
+        << "Starting from preserved population of size " << current_population_.size()
+        << " (NSGA-II elitism)";
+    
+    // CRITICAL FIX 2: Preserve evolved population (elite preservation)
+    // However, we MUST prioritize newly measured solutions from database (real measurements)
+    // over cost model predictions. Mix preserved population with new measured solutions.
+    
+    // First, get newly measured solutions from database (Pareto optimal, real measurements)
+    std::vector<Schedule> new_measured = PickBestFromDatabase(pop);
+    TVM_PY_LOG(INFO, self->ctx_->logger)
+        << "Found " << new_measured.size() << " newly measured Pareto optimal solution(s) from database";
+    
+    // Build initial population: prioritize measured solutions, then preserved population, then new unmeasured
+    IRModuleSet existing_mods(database_->GetModuleEquality());
+    inits.clear();
+    inits.reserve(pop);
+    
+    // Step 1: Add newly measured solutions (real measurements, highest priority)
+    for (const Schedule& sch : new_measured) {
+      if (static_cast<int>(inits.size()) >= pop) {
+        break;
+      }
+      IRModule mod = sch->mod();
+      size_t shash = ModuleHash(mod);
+      if (!existing_mods.Has(mod, shash)) {
+        inits.push_back(sch);
+        existing_mods.Add(mod, shash);
+      }
+    }
+    
+    // Step 2: Add preserved population (cost model evolved, but may not be measured yet)
+    // Only add if not already in population and we have space
+    for (const Schedule& sch : current_population_) {
+      if (static_cast<int>(inits.size()) >= pop) {
+        break;
+      }
+      IRModule mod = sch->mod();
+      size_t shash = ModuleHash(mod);
+      if (!existing_mods.Has(mod, shash)) {
+        inits.push_back(sch);
+        existing_mods.Add(mod, shash);
+      }
+    }
+    
+    // Step 3: Fill remaining slots with new unmeasured solutions
+    int needed = pop - static_cast<int>(inits.size());
+    if (needed > 0) {
+      std::vector<Schedule> unmeasured = SampleInitPopulation(needed);
+      inits.insert(inits.end(), unmeasured.begin(), unmeasured.end());
+    }
+    
+    TVM_PY_LOG(INFO, self->ctx_->logger)
+        << "Initial population: " << new_measured.size() << " measured, "
+        << (inits.size() - new_measured.size() - needed) << " preserved, " << needed << " new unmeasured";
+    
+    // Note: We allow inits to exceed pop_size here because evolution will select the best
+    // The evolution step (EvolveWithCostModel) will ensure the final population is exactly pop_size
   }
-  TVM_PY_LOG(INFO, self->ctx_->logger) << "Sampled " << unmeasured.size() << " candidate(s)";
-  inits.insert(inits.end(), measured.begin(), measured.end());
-  inits.insert(inits.end(), unmeasured.begin(), unmeasured.end());
-  std::vector<Schedule> bests = EvolveWithCostModel(inits, sample_num);
+  
+  // Evolve the population
+  // CRITICAL FIX: EvolveWithCostModel now returns the full evolved population (size pop_size)
+  // not just num candidates, so we can preserve it for next iteration
+  std::vector<Schedule> evolved_population = EvolveWithCostModel(inits, pop);
   TVM_PY_LOG(INFO, self->ctx_->logger)
-      << "Got " << bests.size() << " candidate(s) with NSGA-II search";
-  std::vector<Schedule> picks = PickWithEpsGreedy(unmeasured, bests, sample_num);
+      << "Evolved population size: " << evolved_population.size();
+  
+  // Select top candidates for measurement from evolved population
+  std::vector<Schedule> bests;
+  if (static_cast<int>(evolved_population.size()) > sample_num) {
+    bests.assign(evolved_population.begin(), evolved_population.begin() + sample_num);
+  } else {
+    bests = evolved_population;
+  }
+  
+  // CRITICAL FIX: Preserve evolved population for next iteration (NSGA-II elitism)
+  current_population_ = evolved_population;
+  
+  // CRITICAL BUG FIX: Select candidates from EVOLVED population, not pre-evolution population
+  // Using 'inits' (pre-evolution) causes selection of worse solutions, making Pareto front degrade
+  // We should select from 'evolved_population' which contains the improved solutions after evolution
+  std::vector<Schedule> picks = PickWithEpsGreedy(evolved_population, bests, sample_num);
   TVM_PY_LOG(INFO, self->ctx_->logger)
       << "Sending " << picks.size() << " candidates(s) for measurement";
+  
   if (picks.empty()) {
     ++this->num_empty_iters;
     if (this->num_empty_iters >= self->num_empty_iters_before_early_stop) {
       return std::nullopt;
     }
   }
+  
   return AssembleCandidates(picks);
 }
 

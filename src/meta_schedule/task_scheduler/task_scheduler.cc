@@ -153,6 +153,8 @@ void TaskCleanUp(TaskRecordNode* self, int task_id, const ffi::Array<RunnerResul
 }
 
 void TaskSchedulerNode::SetReferencePoint(TuneContext ctx, Builder builder, Runner runner) {
+  TVM_PY_LOG(INFO, ctx->logger) << "Setting reference point for task: " << ctx->task_name;
+
   // Create a TaskRecord and keep it alive (don't use temporary)
   TaskRecord task_record = TaskRecord(ctx, 1.0);
   TaskRecordNode* task = task_record.get();
@@ -569,6 +571,7 @@ void TaskSchedulerNode::PrintTuningStatistics() {
      << "\nTotal latency (us): " << total_latency;
   if (has_reference_point) {
     os << "\nTotal hypervolume: " << total_hypervolume;
+    os << "\nReference point: Latency=" << this->latency_reference_point.value() << "ms, Bandwidth=" << this->bandwidth_reference_point.value() << "MB/s";
   }
   os << "\n";
 

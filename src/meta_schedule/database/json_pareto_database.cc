@@ -158,6 +158,7 @@ bool TuningRecordDominates(const TuningRecord& a, const TuningRecord& b) {
   double a_bw = GetMeanFromFloatImmArray(a->bw_mbps, std::numeric_limits<double>::max());
   double b_bw = GetMeanFromFloatImmArray(b->bw_mbps, std::numeric_limits<double>::max());
   
+  // Both latency and bandwidth should be MINIMIZED (lower is better)
   return ParetoDominates(a_time, a_bw, b_time, b_bw);
 }
 
@@ -281,8 +282,8 @@ class JSONParetoDatabaseNode : public DatabaseNode {
     
     // Extract objective values for non-dominated sorting
     int n = existing_records.size();
-    std::vector<double> obj1_values(n);  // run_secs (time)
-    std::vector<double> obj2_values(n);   // bw_mbps (bandwidth)
+    std::vector<double> obj1_values(n);  // run_secs (time) - minimize
+    std::vector<double> obj2_values(n);   // bw_mbps (bandwidth) - minimize (lower is better)
     for (int i = 0; i < n; ++i) {
       obj1_values[i] = GetMeanFromFloatImmArray(existing_records[i]->run_secs, std::numeric_limits<double>::max());
       obj2_values[i] = GetMeanFromFloatImmArray(existing_records[i]->bw_mbps, std::numeric_limits<double>::max());

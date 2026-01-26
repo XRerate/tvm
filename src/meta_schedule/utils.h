@@ -717,6 +717,7 @@ double GetMeanFromFloatImmArray(const ffi::Optional<ffi::Array<FloatImm>>& arr,
  * \brief Check if TuningRecord A dominates TuningRecord B.
  * A dominates B if A is better in at least one objective and not worse in any.
  * Objectives: minimize run_secs (time), minimize bw_mbps (bandwidth).
+ * Both objectives should be minimized (lower is better).
  * \param a The first record.
  * \param b The second record.
  * \return True if A dominates B.
